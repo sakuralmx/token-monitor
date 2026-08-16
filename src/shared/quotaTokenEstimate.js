@@ -69,7 +69,17 @@
     if (!samples.length) return null;
     samples.sort((a, b) => a - b);
     const middle = Math.floor(samples.length / 2);
-    const capacity = samples.length % 2 ? samples[middle] : (samples[middle - 1] + samples[middle]) / 2;
+    const sampledCapacity = samples.length % 2 ? samples[middle] : (samples[middle - 1] + samples[middle]) / 2;
+    // The history list below the estimate shows raw tokens for the active quota
+    // cycle. Keep the headline capacity on that same observable scale: it cannot
+    // be smaller than the capacity implied by tokens already consumed during the
+    // measured percentage drop. This also protects a cache-heavy active cycle
+    // from being understated by the historical-median/current-mix projection.
+    const currentCycle = cycleSummaries(list).at(-1);
+    const observedCapacityFloor = currentCycle?.rawTokens > 0 && currentCycle?.usedPercent > 0
+      ? currentCycle.rawTokens * 100 / currentCycle.usedPercent
+      : 0;
+    const capacity = Math.max(sampledCapacity, observedCapacityFloor);
     const windowCount = windows.size;
     const confidence = windowCount >= 3 && samples.length >= 25 ? 'high' : windowCount >= 2 && samples.length >= 12 ? 'medium' : 'low';
     return { capacity: Math.round(capacity), samples: samples.length, windows: windowCount, confidence, cacheHitPercent: currentCacheRatio === null ? null : Number((currentCacheRatio * 100).toFixed(1)) };

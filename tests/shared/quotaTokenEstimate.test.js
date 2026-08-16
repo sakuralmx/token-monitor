@@ -18,9 +18,20 @@ test('normalizes every historical interval to the current cache mix', () => {
     { remainingPercent: 77, components: { input: 225_000, cacheRead: 190_000, cacheWrite: 0, output: 0 } }
   ];
   const result = quota.rawCapacityFromObservations(observations, { input: 20_000, cacheRead: 180_000, cacheWrite: 0, output: 0 });
-  assert.equal(result.capacity, 12_894_737);
+  assert.equal(result.capacity, 13_833_333);
   assert.equal(result.samples, 3);
   assert.equal(result.cacheHitPercent, 90);
+});
+test('raw capacity cannot be lower than the active cycle consumption implies', () => {
+  const observations = [
+    { remainingPercent: 75, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, resetsAt: 'active' },
+    { remainingPercent: 24, components: { input: 7_583_169, cacheRead: 173_528_704, cacheWrite: 0, output: 442_099 }, resetsAt: 'active' }
+  ];
+  const result = quota.rawCapacityFromObservations(observations, { input: 100, cacheRead: 100, cacheWrite: 0, output: 0 });
+  const consumed = 181_553_972;
+  assert.equal(result.capacity, Math.round(consumed * 100 / 51));
+  assert.ok(result.capacity > consumed);
+  assert.ok(Math.round(result.capacity * 24 / 100) > 0);
 });
 test('learns capacity from official percentage movement and local components', () => {
   let state = quota.advanceCalibration(null, { remainingPercent: 90, localEquivalent: 1000, at: '2026-08-14T00:00:00Z', resetsAt: '2026-08-18T00:00:00Z' });
