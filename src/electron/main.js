@@ -2661,7 +2661,18 @@ function getHubInfo() {
 async function getHubBuildStatus() {
   if (settings?.hubMode !== 'client') return { status: 'notConfigured', runtime: '', hubUrl: '' };
   const hubUrl = String(settings.hubUrl || '').trim();
-  return probeHubBuild(hubUrl);
+  return probeHubBuild(hubUrl, { secret: settings.secret || '' });
+}
+
+// Explicit "Test connection" from the sync settings: probe health, verify the
+// configured secret against an authenticated route, and classify network /
+// certificate / auth / hub-version failures into the machine codes the
+// renderer localizes. Same probe the periodic status uses, so what the button
+// reports and what the row shows always agree.
+async function testHubConnection() {
+  const { url: hubUrl, secret } = effectiveHubConfig();
+  if (!hubUrl) return { status: 'notConfigured', runtime: '', hubUrl: '' };
+  return probeHubBuild(hubUrl, { secret });
 }
 
 async function startEmbeddedHub() {
@@ -6182,6 +6193,7 @@ app.whenReady().then(() => {
   }));
   ipcMain.handle('hub:getInfo', () => getHubInfo());
   ipcMain.handle('hub:getBuildStatus', () => getHubBuildStatus());
+  ipcMain.handle('hub:testConnection', () => testHubConnection());
   ipcMain.handle('hub:regenerateSecret', () => {
     settings.hubHostSecret = generateHubSecret();
     saveSettings({ throwOnError: true });

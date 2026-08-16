@@ -361,6 +361,8 @@ Object.assign(els, {
   trayOptions: document.getElementById('trayOptions'),
   hubModeOptions: document.getElementById('hubModeOptions'),
   hubBuildStatus: document.getElementById('hubBuildStatus'),
+  hubTestButton: document.getElementById('hubTestButton'),
+  hubTestStatus: document.getElementById('hubTestStatus'),
   hubClientFields: document.getElementById('hubClientFields'),
   hubHostFields: document.getElementById('hubHostFields'),
   hubPortInput: document.getElementById('hubPortInput'),
@@ -8086,6 +8088,40 @@ function renderHubBuildStatus() {
   els.hubBuildStatus.hidden = false;
 }
 
+let hubTestRequest = 0;
+
+function renderHubTestStatus(model) {
+  if (!els.hubTestStatus) return;
+  if (!model) {
+    els.hubTestStatus.hidden = true;
+    els.hubTestStatus.textContent = '';
+    return;
+  }
+  const base = model.targetKey ? t(model.key, { target: t(model.targetKey) }) : t(model.key);
+  const text = model.detail ? `${base} (${model.detail})` : base;
+  els.hubTestStatus.textContent = text;
+  els.hubTestStatus.className = `hub-status hub-test-status${model.tone ? ` ${model.tone}` : ''}`;
+  els.hubTestStatus.hidden = false;
+}
+
+async function runHubConnectionTest() {
+  if (!els.hubTestButton || !window.tokenMonitor.testHubConnection) return;
+  const request = ++hubTestRequest;
+  els.hubTestButton.disabled = true;
+  renderHubTestStatus({ key: 'settings.sync.testingConnection', tone: '' });
+  try {
+    const result = await window.tokenMonitor.testHubConnection();
+    if (request !== hubTestRequest) return;
+    const visible = state.settings?.hubMode === 'client';
+    renderHubTestStatus(visible ? hubBuildPresentationApi.testPresentation(result) : null);
+  } catch (_) {
+    if (request !== hubTestRequest) return;
+    renderHubTestStatus({ key: 'settings.sync.offline.network', tone: 'error' });
+  } finally {
+    if (request === hubTestRequest) els.hubTestButton.disabled = false;
+  }
+}
+
 function renderHubAddresses(addresses, port) {
   els.hubAddressList.replaceChildren();
   if (addresses.length === 0) {
@@ -10800,6 +10836,8 @@ els.hubModeOptions.addEventListener('change', async (event) => {
   void refreshHubBuildStatus();
   await refreshStats();
 });
+
+els.hubTestButton?.addEventListener('click', () => void runHubConnectionTest());
 
 // Both, not just the mark: either one reveals the reading on hover, so a click or hold that
 // only worked on one of them would leave the other looking broken. The suppression listener
