@@ -15,6 +15,7 @@ const { CURRENCY_CODES, normalizeCurrency } = require('../shared/currency');
 const { currentHubBuild } = require('../shared/hubBuildIdentity');
 const { isAuthorized, readJsonBody, sendJson, sendText } = require('../shared/http');
 const { loadDotEnv, parseArgs, projectRoot, readJson, writeJsonAtomic } = require('../shared/config');
+const { createCatalogStore } = require('../shared/catalogStore');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -34,6 +35,7 @@ function createHub({
   secret = '',
   staleAfterMs = DEFAULT_STALE_AFTER_MS,
   dataFile = path.join(projectRoot(), 'data', 'devices.json'),
+  catalogFile = '',
   logger = console
 } = {}) {
   const store = readJson(dataFile, { version: 1, devices: {} }) || { version: 1, devices: {} };
@@ -44,6 +46,21 @@ function createHub({
     store.subscriptions = emptySubscriptionDocument();
   }
   const bindHost = resolveBindHost(host, secret);
+
+  // Session catalog: an optional second data plane in its own SQLite file.
+  // Enabled when a catalogFile is provided (Node hub deployments; the Worker
+  // never sets one and reports catalog_unavailable via the missing health field).
+  // Default derives a per-dataFile path so distinct hubs never share one store.
+  let catalog = null;
+  let catalogError = null;
+  const resolvedCatalogFile = String(catalogFile || '').trim()
+    || path.join(path.dirname(dataFile), `${path.basename(dataFile, path.extname(dataFile))}-catalog.db`);
+  try {
+    catalog = createCatalogStore({ file: resolvedCatalogFile, logger: { log: () => {} } });
+  } catch (error) {
+    catalogError = error.message;
+    logger.error?.(`[catalog] disabled: ${error.message}`);
+  }
 
   function persist() {
     store.version = 1;
@@ -189,6 +206,9 @@ function createHub({
         hubBuild: currentHubBuild('node-hub'),
         deviceCount: Object.keys(store.devices).length,
         secretRequired: Boolean(secret),
+        // Catalog capability: present only when the store is live. A malformed
+        // or missing field reads as "catalog unavailable" to clients.
+        ...(catalog ? { catalogVersion: catalog.schemaVersion } : {}),
         now: new Date().toISOString()
       });
     }
@@ -262,6 +282,55 @@ function createHub({
       return sendJson(res, 200, { ok: true, deviceId });
     }
 
+    // Session catalog (docs/API.md). All routes sit behind the same secret gate
+    // and answer 404 catalog_unavailable when the store is not enabled — the
+    // documented downgrade path for Worker / older Node hubs.
+    if (url.pathname === '/api/catalog/v1/upsert' && req.method === 'POST') {
+      if (!catalog) return sendJson(res, 404, { error: 'catalog_unavailable' });
+      try {
+        const payload = await readJsonBody(req);
+        const result = catalog.upsertEntries(payload?.entries);
+        return sendJson(res, 200, { ok: true, catalogVersion: catalog.schemaVersion, ...result });
+      } catch (error) {
+        if (error.code === 'batch_too_large') return sendJson(res, 413, { error: 'batch_too_large', message: error.message });
+        if (error.code === 'payload_too_large') {
+          res.shouldKeepAlive = false;
+          return sendJson(res, 413, { error: 'payload_too_large', message: error.message }, { connection: 'close' });
+        }
+        return sendJson(res, 400, { error: 'bad_request', message: error.message });
+      }
+    }
+
+    if (url.pathname === '/api/catalog/v1/sessions' && req.method === 'GET') {
+      if (!catalog) return sendJson(res, 404, { error: 'catalog_unavailable' });
+      const result = catalog.listSessions({
+        deviceId: url.searchParams.get('deviceId') || '',
+        client: url.searchParams.get('client') || '',
+        workspace: url.searchParams.get('workspace') || '',
+        since: url.searchParams.get('since') || '',
+        includeDeleted: url.searchParams.get('includeDeleted') === '1',
+        limit: Number(url.searchParams.get('limit')) || undefined,
+        cursor: url.searchParams.get('cursor') || ''
+      });
+      return sendJson(res, 200, { ok: true, catalogVersion: catalog.schemaVersion, ...result });
+    }
+
+    if (url.pathname === '/api/catalog/v1/invalidate' && req.method === 'POST') {
+      if (!catalog) return sendJson(res, 404, { error: 'catalog_unavailable' });
+      try {
+        const payload = await readJsonBody(req);
+        const result = catalog.invalidateKeys(payload?.keys);
+        return sendJson(res, 200, { ok: true, catalogVersion: catalog.schemaVersion, ...result });
+      } catch (error) {
+        if (error.code === 'batch_too_large') return sendJson(res, 413, { error: 'batch_too_large', message: error.message });
+        if (error.code === 'payload_too_large') {
+          res.shouldKeepAlive = false;
+          return sendJson(res, 413, { error: 'payload_too_large', message: error.message }, { connection: 'close' });
+        }
+        return sendJson(res, 400, { error: 'bad_request', message: error.message });
+      }
+    }
+
     return sendJson(res, 404, { error: 'not_found' });
   }
 
@@ -286,13 +355,14 @@ function createHub({
     return new Promise((resolve) => {
       for (const res of sseClients) { try { res.end(); } catch (_) {} }
       sseClients.clear();
+      if (catalog) { try { catalog.close(); } catch (_) {} }
       server.close(() => resolve());
     });
   }
 
   return {
     start, stop, server, getStats, getHistory, getDevices, ingest, deleteDevice, onStats, bindHost,
-    getSubscriptions, setSubscriptions
+    getSubscriptions, setSubscriptions, catalog: catalog || null, catalogError
   };
 }
 
@@ -304,11 +374,17 @@ if (require.main === module) {
   const secret = String(args.secret || process.env.TOKEN_MONITOR_SECRET || '').trim();
   const staleAfterMs = Number(args.staleAfterMs || process.env.TOKEN_MONITOR_STALE_AFTER_MS || DEFAULT_STALE_AFTER_MS);
   const dataFile = String(args.dataFile || process.env.TOKEN_MONITOR_DATA_FILE || path.join(projectRoot(), 'data', 'devices.json'));
+  const catalogFile = String(args.catalogFile || process.env.TOKEN_MONITOR_CATALOG_FILE || '');
 
-  const hub = createHub({ port, host, secret, staleAfterMs, dataFile });
+  const hub = createHub({ port, host, secret, staleAfterMs, dataFile, catalogFile });
   hub.start().then(() => {
     console.log(`Token Monitor hub listening on http://${hub.bindHost}:${port}`);
     console.log(`Data file: ${dataFile}`);
+    if (hub.catalog) {
+      console.log(`Session catalog: enabled (schema v${hub.catalog.schemaVersion})`);
+    } else {
+      console.log(`Session catalog: unavailable (${hub.catalogError || 'no node:sqlite support'})`);
+    }
     if (!secret) {
       console.warn(`Warning: TOKEN_MONITOR_SECRET is not set, so the hub is bound to ${hub.bindHost} (localhost only) to keep account identity off the network. Set a secret to accept connections from other devices.`);
     }

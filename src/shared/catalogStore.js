@@ -1,0 +1,374 @@
+'use strict';
+
+// Hub-side permanent session catalog store (plan T8), built on Node's built-in
+// node:sqlite. This module is Node-hub-only: the Cloudflare Worker does not
+// implement the catalog (it returns `catalog_unavailable`), so this file is
+// deliberately NOT part of the vendored worker shared closure.
+//
+// Store contract (docs/API.md "Session catalog"):
+// - primary key (deviceId, client, sessionId)
+// - whole-record replace per key on upsert
+// - conflict: greater `updatedAt` wins; on a tie `local` titleSource beats
+//   `fallback`
+// - soft-delete tombstones (deletedAt), never physical row removal, so a
+//   deleted session stays queryable with includeDeleted and cannot resurrect
+// - schema versioning via PRAGMA user_version with forward-only migrations
+// - durable per transaction; WAL journaling so concurrent writers never corrupt
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const CATALOG_SCHEMA_VERSION = 1;
+
+let sqlite = null;
+try { sqlite = require('node:sqlite'); } catch (_) { sqlite = null; }
+
+const VALID_CLIENTS = new Set(['cherrystudio', 'codex', 'dsh']);
+const MAX_BATCH_ENTRIES = 1000;
+const MAX_BATCH_KEYS = 500;
+const MAX_PAGE_SIZE = 500;
+const DEFAULT_PAGE_SIZE = 200;
+
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function cleanText(value, maxChars = 200) {
+  const text = String(value || '').normalize('NFC').replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  return Array.from(text).slice(0, maxChars).join('');
+}
+
+function isoOf(value) {
+  if (value === null || value === undefined) return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function cursorEncode(payload) {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function cursorDecode(raw) {
+  try {
+    const payload = JSON.parse(Buffer.from(String(raw || ''), 'base64url').toString('utf8'));
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// The wire shape is a closed field list (docs/API.md "The unified entry");
+// rowToEntry maps snake_case SQL columns back to it explicitly.
+
+function entryToRow(entry) {
+  return {
+    deviceId: cleanText(entry.deviceId, 100),
+    client: entry.client,
+    sessionId: cleanText(entry.sessionId, 200),
+    workspaceKey: cleanText(entry.workspaceKey, 120),
+    workspaceLabel: cleanText(entry.workspaceLabel, 120),
+    title: cleanText(entry.title, 200),
+    titleSource: entry.titleSource === 'local' ? 'local' : 'fallback',
+    startedAt: isoOf(entry.startedAt),
+    lastUsedAt: isoOf(entry.lastUsedAt),
+    messageCount: Number.isInteger(num(entry.messageCount)) ? Math.max(0, Math.round(num(entry.messageCount))) : 0,
+    totalTokens: Math.max(0, Math.round(num(entry.stats?.totalTokens ?? 0))),
+    costUsd: Math.max(0, num(entry.stats?.costUsd ?? 0)),
+    updatedAt: isoOf(entry.updatedAt) || isoOf(entry.lastUsedAt) || new Date().toISOString(),
+    deletedAt: isoOf(entry.deletedAt)
+  };
+}
+
+function rowToEntry(row) {
+  const entry = {
+    deviceId: row.device_id,
+    client: row.client,
+    sessionId: row.session_id,
+    workspaceKey: row.workspace_key,
+    workspaceLabel: row.workspace_label,
+    title: row.title,
+    titleSource: row.title_source,
+    lastUsedAt: row.last_used_at,
+    updatedAt: row.updated_at
+  };
+  if (row.started_at) entry.startedAt = row.started_at;
+  if (row.message_count > 0) entry.messageCount = row.message_count;
+  const stats = {};
+  if (row.total_tokens > 0) stats.totalTokens = row.total_tokens;
+  if (row.cost_usd > 0) stats.costUsd = row.cost_usd;
+  if (Object.keys(stats).length > 0) entry.stats = stats;
+  if (row.deleted_at) entry.deletedAt = row.deleted_at;
+  return entry;
+}
+
+function migrations() {
+  return [
+    // v1: initial schema.
+    `
+    CREATE TABLE catalog_entries (
+      device_id       TEXT NOT NULL,
+      client          TEXT NOT NULL,
+      session_id      TEXT NOT NULL,
+      workspace_key   TEXT NOT NULL DEFAULT '',
+      workspace_label TEXT NOT NULL DEFAULT '',
+      title           TEXT NOT NULL,
+      title_source    TEXT NOT NULL DEFAULT 'fallback',
+      started_at      TEXT,
+      last_used_at    TEXT,
+      message_count   INTEGER NOT NULL DEFAULT 0,
+      total_tokens    INTEGER NOT NULL DEFAULT 0,
+      cost_usd        REAL NOT NULL DEFAULT 0,
+      updated_at      TEXT NOT NULL,
+      deleted_at      TEXT,
+      PRIMARY KEY (device_id, client, session_id)
+    );
+    CREATE INDEX catalog_entries_last_used ON catalog_entries (last_used_at DESC);
+    CREATE INDEX catalog_entries_workspace ON catalog_entries (workspace_key);
+    CREATE INDEX catalog_entries_updated ON catalog_entries (updated_at);
+    `
+  ];
+}
+
+function createCatalogStore({ file, logger = console } = {}) {
+  if (!sqlite) {
+    throw new Error('node:sqlite is unavailable on this Node runtime; catalog store requires Node 22.5+/24');
+  }
+  if (!file) throw new Error('catalog store requires a file path');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new sqlite.DatabaseSync(file);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA synchronous = NORMAL');
+
+  let version;
+  try {
+    version = db.prepare('PRAGMA user_version').get().user_version || 0;
+  } catch (_) { version = 0; }
+  const applied = migrations();
+  if (version > applied.length) {
+    db.close();
+    throw new Error(`catalog store schema v${version} is newer than this build supports (max v${applied.length})`);
+  }
+  for (let v = version; v < applied.length; v += 1) {
+    db.exec('BEGIN');
+    try {
+      db.exec(applied[v]);
+      db.exec(`PRAGMA user_version = ${v + 1}`);
+      db.exec('COMMIT');
+      if (logger?.log) logger.log(`[catalog] migrated schema v${v} → v${v + 1}`);
+    } catch (error) {
+      db.exec('ROLLBACK');
+      db.close();
+      throw error;
+    }
+  }
+
+  const upsertStmt = db.prepare(`
+    INSERT INTO catalog_entries
+      (device_id, client, session_id, workspace_key, workspace_label, title,
+       title_source, started_at, last_used_at, message_count, total_tokens,
+       cost_usd, updated_at, deleted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(device_id, client, session_id) DO UPDATE SET
+      workspace_key   = excluded.workspace_key,
+      workspace_label = excluded.workspace_label,
+      title           = CASE
+        WHEN excluded.updated_at > catalog_entries.updated_at THEN excluded.title
+        WHEN excluded.updated_at = catalog_entries.updated_at
+          AND excluded.title_source = 'local'
+          AND catalog_entries.title_source != 'local' THEN excluded.title
+        ELSE catalog_entries.title
+      END,
+      title_source    = CASE
+        WHEN excluded.updated_at > catalog_entries.updated_at THEN excluded.title_source
+        WHEN excluded.updated_at = catalog_entries.updated_at
+          AND excluded.title_source = 'local'
+          AND catalog_entries.title_source != 'local' THEN excluded.title_source
+        ELSE catalog_entries.title_source
+      END,
+      started_at      = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.started_at ELSE catalog_entries.started_at END,
+      last_used_at    = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.last_used_at ELSE catalog_entries.last_used_at END,
+      message_count   = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.message_count ELSE catalog_entries.message_count END,
+      total_tokens    = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.total_tokens ELSE catalog_entries.total_tokens END,
+      cost_usd        = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.cost_usd ELSE catalog_entries.cost_usd END,
+      updated_at      = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.updated_at ELSE catalog_entries.updated_at END,
+      deleted_at      = CASE
+        WHEN excluded.deleted_at IS NULL AND catalog_entries.deleted_at IS NOT NULL THEN NULL
+        WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.deleted_at
+        ELSE catalog_entries.deleted_at
+      END
+  `);
+
+  // Per-key normalization gate (client enum + required identity) mirrors the
+  // client-side whitelist; the hub is the final trust boundary.
+  function isValidKey(entry) {
+    return entry
+      && typeof entry.deviceId === 'string' && entry.deviceId.trim()
+      && VALID_CLIENTS.has(String(entry.client || '').toLowerCase())
+      && typeof entry.sessionId === 'string' && entry.sessionId.trim()
+      && entry.title;
+  }
+
+  function upsertEntries(entries) {
+    if (!Array.isArray(entries)) {
+      const error = new Error('entries must be an array');
+      error.code = 'bad_catalog';
+      throw error;
+    }
+    if (entries.length > MAX_BATCH_ENTRIES) {
+      const error = new Error(`batch exceeds ${MAX_BATCH_ENTRIES} entries`);
+      error.code = 'batch_too_large';
+      throw error;
+    }
+    let accepted = 0;
+    let rejected = 0;
+    db.exec('BEGIN');
+    try {
+      for (const raw of entries) {
+        const entry = { ...raw, client: String(raw?.client || '').toLowerCase() };
+        if (!isValidKey(entry)) { rejected += 1; continue; }
+        const row = entryToRow(entry);
+        upsertStmt.run(
+          row.deviceId, row.client, row.sessionId, row.workspaceKey, row.workspaceLabel,
+          row.title, row.titleSource, row.startedAt, row.lastUsedAt, row.messageCount,
+          row.totalTokens, row.costUsd, row.updatedAt, row.deletedAt
+        );
+        accepted += 1;
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return { accepted, rejected };
+  }
+
+  function listSessions({
+    deviceId = '',
+    client = '',
+    workspace = '',
+    since = '',
+    includeDeleted = false,
+    limit = DEFAULT_PAGE_SIZE,
+    cursor = ''
+  } = {}) {
+    const pageSize = Math.min(Math.max(1, Math.round(limit) || DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
+    const clauses = [];
+    const params = [];
+    if (deviceId) { clauses.push('device_id = ?'); params.push(cleanText(deviceId, 100)); }
+    if (client) {
+      const clientId = String(client).toLowerCase();
+      if (!VALID_CLIENTS.has(clientId)) return { entries: [], nextCursor: '', hasMore: false };
+      clauses.push('client = ?');
+      params.push(clientId);
+    }
+    if (workspace) { clauses.push('workspace_key = ?'); params.push(cleanText(workspace, 120)); }
+    if (since) {
+      const sinceIso = isoOf(since);
+      if (sinceIso) { clauses.push('updated_at > ?'); params.push(sinceIso); }
+    }
+    if (!includeDeleted) clauses.push('deleted_at IS NULL');
+
+    // Cursor encodes (updatedAt, deviceId, client, sessionId) as an opaque
+    // token; order is updated_at DESC, then device_id/client/session_id for a
+    // stable total order across pages.
+    let cursorClause = '';
+    if (cursor) {
+      const c = cursorDecode(cursor);
+      if (c && c.updatedAt) {
+        cursorClause = `
+          AND (
+            updated_at < ? OR
+            (updated_at = ? AND (
+              device_id > ? OR
+              (device_id = ? AND (client > ? OR (client = ? AND session_id > ?)))
+            ))
+          )`;
+        params.push(c.updatedAt, c.updatedAt, c.deviceId, c.deviceId, c.client, c.client, c.sessionId);
+      }
+    }
+
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = db.prepare(`
+      SELECT * FROM catalog_entries
+      ${where} ${cursorClause}
+      ORDER BY updated_at DESC, device_id ASC, client ASC, session_id ASC
+      LIMIT ${pageSize + 1}
+    `).all(...params);
+
+    const hasMore = rows.length > pageSize;
+    const page = rows.slice(0, pageSize).map(rowToEntry);
+    let nextCursor = '';
+    if (hasMore && page.length > 0) {
+      const last = page[page.length - 1];
+      nextCursor = cursorEncode({
+        updatedAt: last.updatedAt,
+        deviceId: last.deviceId,
+        client: last.client,
+        sessionId: last.sessionId
+      });
+    }
+    return { entries: page, nextCursor, hasMore };
+  }
+
+  function invalidateKeys(keys) {
+    if (!Array.isArray(keys)) {
+      const error = new Error('keys must be an array');
+      error.code = 'bad_catalog';
+      throw error;
+    }
+    if (keys.length > MAX_BATCH_KEYS) {
+      const error = new Error(`batch exceeds ${MAX_BATCH_KEYS} keys`);
+      error.code = 'batch_too_large';
+      throw error;
+    }
+    const now = new Date().toISOString();
+    const tombstoneStmt = db.prepare(`
+      UPDATE catalog_entries SET deleted_at = ?, updated_at = ?
+      WHERE device_id = ? AND client = ? AND session_id = ?
+    `);
+    let invalidated = 0;
+    db.exec('BEGIN');
+    try {
+      for (const key of keys || []) {
+        if (!key || !key.deviceId || !key.sessionId || !VALID_CLIENTS.has(String(key.client || '').toLowerCase())) continue;
+        const result = tombstoneStmt.run(now, now, cleanText(key.deviceId, 100), String(key.client).toLowerCase(), cleanText(key.sessionId, 200));
+        invalidated += result.changes;
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return { invalidated };
+  }
+
+  function backup(destPath) {
+    // SQLite's VACUUM INTO writes a consistent snapshot even under WAL.
+    db.exec(`VACUUM INTO '${String(destPath).replace(/'/g, "''")}'`);
+    return destPath;
+  }
+
+  function close() {
+    try { db.close(); } catch (_) { /* already closed */ }
+  }
+
+  return {
+    backup,
+    close,
+    invalidateKeys,
+    listSessions,
+    schemaVersion: CATALOG_SCHEMA_VERSION,
+    upsertEntries
+  };
+}
+
+module.exports = {
+  CATALOG_SCHEMA_VERSION,
+  MAX_BATCH_ENTRIES,
+  MAX_BATCH_KEYS,
+  MAX_PAGE_SIZE,
+  DEFAULT_PAGE_SIZE,
+  VALID_CLIENTS,
+  createCatalogStore
+};

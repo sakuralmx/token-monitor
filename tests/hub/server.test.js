@@ -451,3 +451,103 @@ test('a currency the app carries no rate for is refused, not rewritten', async (
     fs.rmSync(dataFile, { force: true });
   }
 });
+
+test('health advertises the catalog version when the store is live', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
+  await hub.start();
+  try {
+    const { port } = hub.server.address();
+    const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
+    assert.equal(health.catalogVersion, 1);
+  } finally {
+    await hub.stop();
+    fs.rmSync(dataFile, { force: true });
+  }
+});
+
+test('catalog upsert + sessions round-trips through the authenticated HTTP API', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
+  await hub.start();
+  try {
+    const { port } = hub.server.address();
+    const base = `http://127.0.0.1:${port}`;
+    const auth = { authorization: 'Bearer shh', 'content-type': 'application/json' };
+
+    const upsert = await fetch(`${base}/api/catalog/v1/upsert`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        entries: [{
+          deviceId: 'macbook',
+          client: 'codex',
+          sessionId: 'rollout-1',
+          workspaceKey: 'sha256:proj',
+          workspaceLabel: 'project-a',
+          title: 'Fix the build',
+          titleSource: 'local',
+          lastUsedAt: '2026-08-10T01:00:00.000Z',
+          updatedAt: '2026-08-10T01:00:00.000Z'
+        }]
+      })
+    });
+    assert.equal(upsert.status, 200);
+    const upserted = await upsert.json();
+    assert.deepEqual({ accepted: upserted.accepted, rejected: upserted.rejected }, { accepted: 1, rejected: 0 });
+
+    const listed = await (await fetch(`${base}/api/catalog/v1/sessions`, { headers: auth })).json();
+    assert.equal(listed.entries.length, 1);
+    assert.equal(listed.entries[0].title, 'Fix the build');
+    assert.equal(listed.entries[0].workspaceLabel, 'project-a');
+  } finally {
+    await hub.stop();
+    fs.rmSync(dataFile, { force: true });
+  }
+});
+
+test('catalog routes require the shared secret', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
+  await hub.start();
+  try {
+    const { port } = hub.server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/catalog/v1/sessions`);
+    assert.equal(response.status, 401);
+  } finally {
+    await hub.stop();
+    fs.rmSync(dataFile, { force: true });
+  }
+});
+
+test('catalog invalidate tombstones and hides entries from default reads', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
+  await hub.start();
+  try {
+    const { port } = hub.server.address();
+    const base = `http://127.0.0.1:${port}`;
+    const auth = { authorization: 'Bearer shh', 'content-type': 'application/json' };
+    const entry = {
+      deviceId: 'macbook', client: 'dsh', sessionId: 'session-abc',
+      workspaceKey: 'sha256:w', workspaceLabel: 'workspace',
+      title: 'Do the thing', titleSource: 'fallback',
+      lastUsedAt: '2026-08-10T01:00:00.000Z', updatedAt: '2026-08-10T01:00:00.000Z'
+    };
+    await fetch(`${base}/api/catalog/v1/upsert`, { method: 'POST', headers: auth, body: JSON.stringify({ entries: [entry] }) });
+    const invalidated = await (await fetch(`${base}/api/catalog/v1/invalidate`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ keys: [{ deviceId: 'macbook', client: 'dsh', sessionId: 'session-abc' }] })
+    })).json();
+    assert.equal(invalidated.invalidated, 1);
+    const defaultList = await (await fetch(`${base}/api/catalog/v1/sessions`, { headers: auth })).json();
+    assert.equal(defaultList.entries.length, 0);
+    const withDeleted = await (await fetch(`${base}/api/catalog/v1/sessions?includeDeleted=1`, { headers: auth })).json();
+    assert.equal(withDeleted.entries.length, 1);
+    assert.ok(withDeleted.entries[0].deletedAt);
+  } finally {
+    await hub.stop();
+    fs.rmSync(dataFile, { force: true });
+  }
+});

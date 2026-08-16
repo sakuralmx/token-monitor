@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Token Monitor Hub backup — devices.json (device records + subscriptions) plus
-# the SQLite session catalog (catalog.db) once T8 ships. Keeps the newest N
-# archives locally; sync them off-host (rclone/rsync/OSS) yourself.
+# the SQLite session catalog (devices-catalog.db by default; override with
+# TOKEN_MONITOR_CATALOG_FILE). Keeps the newest N archives locally; sync them
+# off-host (rclone/rsync/OSS) yourself.
 set -euo pipefail
 
 DATA_DIR="${TOKEN_MONITOR_DATA_DIR:-/var/lib/token-monitor}"
