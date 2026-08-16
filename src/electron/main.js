@@ -53,6 +53,10 @@ const { customPricingPath } = require('../shared/tokscaleConfig');
 const { applyCustomPricing, normalizeCustomPricingSetting } = require('../shared/tokscaleCustomPricing');
 const { createHub } = require('../hub/server');
 const { probeHubBuild } = require('./hubBuildStatus');
+const { createCatalogSyncController } = require('./catalogSyncController');
+const { scanCherryStudioSessions } = require('../shared/cherryStudioSessions');
+const { scanCodexSessions } = require('../shared/codexSessions');
+const { scanDshSessions } = require('../shared/dshSessions');
 const { claudeWebCookie, deepseekToken, fetchClaudeLimits, normalizeClaudeWebCookieInput, normalizeLimitsRefreshMode, normalizeLimitsRefreshMs, parseBoolean, parseLimitProviders, runCodexLogin, minimaxToken, copilotToken, zaiToken, zaiRegion, zaiTeamToken, volcengineCredentials, qoderCookie, kimiToken, kimiWebToken, ollamaSessionCookie } = require('../shared/limitCollector');
 const { fetchOllamaLimits, rememberOllamaValidation } = require('../shared/ollamaLimits');
 const { copilotLoginErrorMessage, isAllowedVerificationUrl, runCopilotDeviceFlowLogin } = require('../shared/copilotDeviceFlow');
@@ -2367,6 +2371,7 @@ let latestHubStatsSource = 'none';
 let latestHubStatsGeneration = null;
 let latestHubStatsIdentity = null;
 let hubModeGeneration = 0;
+let catalogSyncController = null;
 let tray = null;
 let latestStats = null;
 let macWidgetSnapshotController = null;
@@ -4558,6 +4563,48 @@ function exitTrayMode() {
   else ensureTray();
 }
 
+// Session catalog sync (T9): scan the local Cherry Studio / Codex / DSH session
+// adapters, upload the incremental delta to the hub, and persist the advanced
+// sync state. Runs in client and host modes; local mode has no hub to talk to
+// and skips the upload (state stays pending).
+function catalogSyncAdapters() {
+  const home = os.homedir();
+  const deviceId = settings?.deviceId || defaultDeviceId();
+  const deps = { deviceId, home, env: process.env, platform: process.platform };
+  return [
+    { scan: () => scanCherryStudioSessions(deps) },
+    { scan: () => scanCodexSessions(deps) },
+    { scan: () => scanDshSessions(deps) }
+  ];
+}
+
+function stopCatalogSync() {
+  if (catalogSyncController) {
+    try { catalogSyncController.stop(); } catch (_) {}
+    catalogSyncController = null;
+  }
+}
+
+function startCatalogSync() {
+  stopCatalogSync();
+  const { url, secret } = effectiveHubConfig();
+  if (!url) return; // local mode: nothing to upload to; state stays pending
+  catalogSyncController = createCatalogSyncController({
+    scanAdapters: catalogSyncAdapters,
+    readState: () => settings.catalogSyncState || {},
+    writeState: (next) => {
+      settings.catalogSyncState = next;
+      saveSettings();
+    },
+    config: () => ({ deviceId: settings?.deviceId || defaultDeviceId(), baseUrl: url, secret }),
+    intervalMs: 30 * 60 * 1000,
+    onError: (error) => console.log(`[catalog] sync cycle failed: ${error?.message || error}`)
+  });
+  catalogSyncController.start().catch((error) => {
+    console.log(`[catalog] initial sync failed: ${error?.message || error}`);
+  });
+}
+
 function startMode() {
   hubModeGeneration += 1;
   advanceMacWidgetProducerAndSourceEpoch();
@@ -4568,6 +4615,7 @@ function startMode() {
   stopStatsStream();
   stopHostStats();
   stopSyncCollector();
+  stopCatalogSync();
   // Serialize the hub-side work so rapid UI events (mode change immediately
   // followed by a port edit or secret regenerate) reconcile in order rather
   // than racing — otherwise an in-flight start could finish with the old
@@ -4589,6 +4637,7 @@ function startMode() {
       }
       startHostStats();
       startHostCollector();
+      startCatalogSync();
       reconcileSharedSubscriptions();
       return;
     }
@@ -4596,6 +4645,7 @@ function startMode() {
     if (effectiveHubConfig().url) {
       startStatsStream({ resetSnapshot: true });
       startSyncCollector();
+      startCatalogSync();
       reconcileSharedSubscriptions();
     } else {
       startLocalCollector();

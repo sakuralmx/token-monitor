@@ -14,6 +14,10 @@ const {
 } = require('../shared/limitCollector');
 const { postSyncPayload } = require('../shared/syncPayload');
 const { applyProjectRollups } = require('../shared/usage');
+const { runCatalogSync } = require('../shared/catalogSyncRuntime');
+const { scanCherryStudioSessions } = require('../shared/cherryStudioSessions');
+const { scanCodexSessions } = require('../shared/codexSessions');
+const { scanDshSessions } = require('../shared/dshSessions');
 const { runAgent, runAgentOnce } = require('./runtime');
 const {
   applySessionUsageArchive,
@@ -115,9 +119,49 @@ async function postUsage(summary) {
   return response.json();
 }
 
+// Session catalog sync state, persisted next to the agent pid file so a restart
+// resumes where the last successful upload left off.
+function readCatalogSyncState() {
+  const file = path.join(path.dirname(pidFilePath()), 'catalog-sync-state.json');
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) { return {}; }
+}
+
+function writeCatalogSyncState(state) {
+  const file = path.join(path.dirname(pidFilePath()), 'catalog-sync-state.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
+async function syncSessionCatalog() {
+  if (dryRun) return;
+  const home = require('node:os').homedir();
+  const deps = { deviceId, home, env: process.env, platform: process.platform };
+  const adapters = [
+    { scan: () => scanCherryStudioSessions(deps) },
+    { scan: () => scanCodexSessions(deps) },
+    { scan: () => scanDshSessions(deps) }
+  ];
+  const report = await runCatalogSync({
+    state: readCatalogSyncState(),
+    deviceId,
+    adapters,
+    fetchFn: fetch,
+    baseUrl: hubUrl,
+    secret,
+    logger: (message) => console.warn(`[catalog] ${message}`)
+  });
+  if (report.nextState) writeCatalogSyncState(report.nextState);
+  if (!report.skipped && !report.unavailable && !report.offline && !report.error) {
+    console.log(`[catalog] synced ${report.upserted} session(s), invalidated ${report.invalidated}`);
+  }
+}
+
 async function deliver(summary) {
   if (dryRun) { console.log(JSON.stringify(summary, null, 2)); return; }
   await postUsage(summary);
+  await syncSessionCatalog();
   console.log(`[${new Date().toISOString()}] posted ${summary.deviceId}: today=${summary.today.totalTokens} month=${summary.month.totalTokens} allTime=${summary.allTime.totalTokens}`);
 }
 
