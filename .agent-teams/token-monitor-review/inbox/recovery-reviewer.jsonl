@@ -1,5 +1,0 @@
-{"id":"fa8cb268-d730-46c1-91f5-c95796bc69fe","from":"captain","to":"recovery-reviewer","content":"你已分配 t3，请立即开始：审查 d139e9d..HEAD，重点 catalogStore/catalogSync/sessionCatalog/适配器/server routes/deploy。只读，不修改代码；输出逐条分级问题、证据、复现和修复建议，并完成 t3。","ts":1786904374651}
-{"id":"be2ea834-92b4-4bbf-84dc-5dc6142f0e40","from":"captain","to":"recovery-reviewer","content":"重点额外核对：catalog GET 是否经过 secret gate；catalogStore title/updatedAt/tombstone 冲突；deploy README 中 certbot hook 文件名与安装步骤是否一致；catalogSync 是否在部分批次成功后状态语义正确。尽快完成并更新 t3。","ts":1786904391377}
-{"id":"0f3d43c2-5775-48cd-a24d-9fc078575b3a","from":"captain","to":"recovery-reviewer","content":"我已确认两个部署候选：hub.env 使用 /var/lib/token-monitor/devices-catalog.db，但 backup.sh 只复制 catalog.db*；README 也没安装 renewal-hook.sh 却引用 reload-nginx.sh。请验证并纳入报告。","ts":1786904435012}
-{"id":"7993f61d-047a-42dc-9dbb-63aa5d74dedd","from":"captain","to":"recovery-reviewer","content":"请在本轮立即收尾，不需继续扩展。将已验证问题与其他高置信发现写入 t3 output，标 completed，并发送 captain。","ts":1786904452032}
-{"id":"d67a1848-bde0-4e9c-841e-2f5c05609489","from":"captain","to":"recovery-reviewer","content":"请把 t3 完整逐条原始报告（含文件行、复现、建议）立即发 captain，当前 task output 被截断。","ts":1786904549392}
