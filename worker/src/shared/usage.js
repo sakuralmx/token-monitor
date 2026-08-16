@@ -8,13 +8,14 @@ const { aggregateLimits, normalizeLimitsSummary } = require('./limits');
 const { normalizeClientHealth } = require('./clientHealth');
 const { coerceHistory, mergeHistories } = require('./history');
 const { REASONIX_CLIENT } = require('./reasonixPaths');
+const DISJOINT_REASONING_CLIENTS = new Set([REASONIX_CLIENT, 'dsh']);
 const { filterReasonixSyntheticSessions, isReasonixSyntheticSession } = require('./reasonixSessionGuard');
 const { canonicalProjectKey, deterministicProjectLabel } = require('./projectKey');
 const { normalizeSyncUploadIntervalMs, staleAfterMsForSyncUpload } = require('./syncUploadInterval');
 const TOKEN_KEYS = ['totalTokens', 'total_tokens', 'totalTokenCount', 'total_token_count', 'tokens', 'tokenCount', 'token_count'];
 // Additive components for a token total. `reasoning` is deliberately excluded for ordinary clients:
 // OpenAI/Codex report reasoning_output_tokens WITHIN output_tokens (tokscale's `output` already
-// includes it). Reasonix is the exception: its `output` and `reasoning` fields are disjoint.
+// includes it). Reasonix and dsh are exceptions: their `output` and `reasoning` fields are disjoint.
 const TOKEN_COMPONENT_KEYS = [
   'input', 'inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens',
   'output', 'outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens',
@@ -83,21 +84,21 @@ function tokenValue(obj) {
 }
 
 // Most clients expose reasoning as a subset of output, so the generic token
-// total intentionally leaves it out. Reasonix stats are different: Tokscale
-// emits output and reasoning as disjoint fields, so only that client adds the
-// separate reasoning component to its token total.
+// total intentionally leaves it out. Reasonix and dsh stats are different:
+// Tokscale emits output and reasoning as disjoint fields for those clients, so
+// they add the separate reasoning component to their token totals.
 function tokenValueForClient(obj, client) {
   const base = tokenValue(obj);
-  if (client !== REASONIX_CLIENT) return base;
+  if (!DISJOINT_REASONING_CLIENTS.has(client)) return base;
   const direct = firstNumber(obj, TOKEN_KEYS);
   return direct !== 0 ? base : base + Math.max(0, firstNumber(obj, REASONING_TOKEN_KEYS));
 }
 
-// The public breakdown uses one output-family bucket. Reasonix's independent reasoning
+// The public breakdown uses one output-family bucket. Independent reasoning for Reasonix/dsh
 // component belongs there so cache-hit + cache-miss + output still closes over totalTokens.
 function outputValueForClient(obj, client) {
   const output = Math.max(0, firstNumber(obj, OUTPUT_TOKEN_KEYS));
-  return client === REASONIX_CLIENT
+  return DISJOINT_REASONING_CLIENTS.has(client)
     ? output + Math.max(0, firstNumber(obj, REASONING_TOKEN_KEYS))
     : output;
 }
@@ -190,6 +191,7 @@ function normalizeClientName(value) {
   if (raw.includes('proma')) return 'proma';
   if (raw.includes('reasonix')) return 'reasonix';
   if (raw.includes('cherrystudio')) return 'cherrystudio';
+  if (raw === 'dsh' || raw.includes('deepseek harness')) return 'dsh';
   if (raw.includes('opencode')) return 'opencode';
   if (raw.includes('openclaw') || raw.includes('clawd') || raw.includes('moltbot') || raw.includes('moldbot')) return 'openclaw';
   return raw.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || null;

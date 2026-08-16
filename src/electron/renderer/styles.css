@@ -3338,6 +3338,7 @@ html.is-windows .settings-panel select option {
 .row-icon-proma      { -webkit-mask-image: url(../../../assets/icons/proma.svg);         mask-image: url(../../../assets/icons/proma.svg); }
 .row-icon-reasonix   { -webkit-mask-image: url(../../../assets/icons/reasonix.svg);      mask-image: url(../../../assets/icons/reasonix.svg); }
 .row-icon-cherrystudio { -webkit-mask-image: url(../../../assets/icons/cherrystudio.svg); mask-image: url(../../../assets/icons/cherrystudio.svg); }
+.row-icon-dsh         { -webkit-mask-image: url(../../../assets/icons/dsh.svg);            mask-image: url(../../../assets/icons/dsh.svg); }
 .row-icon-opencode   { -webkit-mask-image: url(../../../assets/icons/opencode.svg);      mask-image: url(../../../assets/icons/opencode.svg); }
 .row-icon-openrouter { -webkit-mask-image: url(../../../assets/icons/openrouter.svg);    mask-image: url(../../../assets/icons/openrouter.svg); }
 .row-icon-openclaw   { -webkit-mask-image: url(../../../assets/icons/openclaw.svg);      mask-image: url(../../../assets/icons/openclaw.svg); }
@@ -6452,3 +6453,16 @@ html.is-windows .limit-live-badge {
   .tool-preference-row { transition: none; }
   .tool-preference-main .cursor-disclosure-icon { transition: none; }
 }
+.quota-estimate-settings { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
+.quota-estimate-settings label:not(.settings-item) { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
+.quota-token-card { padding: 12px; margin-bottom: 10px; border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.quota-token-card > div { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; margin: 9px 0; }
+.quota-token-card span { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.quota-token-card b { color: var(--text); }
+.quota-token-card small { color: var(--muted); font-size: 10px; }
+.quota-cycle-history { margin: 10px 0; padding-top: 9px; border-top: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); }
+.quota-cycle-history > strong { display: block; margin-bottom: 6px; font-size: 11px; }
+.quota-cycle-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent); }
+.quota-cycle-row > span { display: block; font-size: 10px; }
+.quota-cycle-row > b { font-size: 10px; text-align: right; }
+.quota-cycle-row > small { grid-column: 1 / -1; }

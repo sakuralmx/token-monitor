@@ -1424,6 +1424,7 @@ function clientSourceRoots(clientsCsv) {
     'cherrystudio',
     ...[...new Set(cherryAppDataRoots)].map((dir) => ['cherrystudio-transcripts', dir])
   );
+  add('dsh', ['dsh-sessions', path.join(home, '.dsh', 'sessions')]);
   return byClient;
 }
 

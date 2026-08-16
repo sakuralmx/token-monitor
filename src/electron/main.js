@@ -418,6 +418,8 @@ function defaultSettings() {
     claudePrepaidBalanceEnabled: parseBoolean(process.env.TOKEN_MONITOR_CLAUDE_PREPAID_BALANCE, true),
     opencodeLocalLimitsEnabled: false,
     showLimitUsed: parseBoolean(process.env.TOKEN_MONITOR_SHOW_LIMIT_USED, false),
+    quotaTokenEstimate: { enabled: true, capacity: 0, reservePercent: 0, calibration: null,
+      weights: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6 } },
     // Manual subscription metadata. Plain preferences, not credentials, so they
     // live in settings.json and cross to the renderer unredacted.
     subscriptions: [],
@@ -486,6 +488,14 @@ function normalizeCollectionMode(value, fallback = 'live') {
 // the framing, and neither costs an extra scan.
 function normalizeTokenRateMode(value) {
   return value === 'burn' ? 'burn' : 'speed';
+}
+
+function normalizeQuotaTokenEstimate(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const weights = source.weights && typeof source.weights === 'object' ? source.weights : {};
+  const bounded = (input, fallback, max = Number.MAX_SAFE_INTEGER) => Number.isFinite(Number(input)) ? Math.max(0, Math.min(max, Number(input))) : fallback;
+  const calibration = source.calibration && typeof source.calibration === 'object' ? source.calibration : null;
+  return { enabled: source.enabled !== false, capacity: bounded(source.capacity, 0), reservePercent: bounded(source.reservePercent, 0, 100), calibration, weights: { input: bounded(weights.input, 1), cacheRead: bounded(weights.cacheRead, 0.1), cacheWrite: bounded(weights.cacheWrite, 1.25), output: bounded(weights.output, 6) } };
 }
 
 function normalizeHeatmapMetric(value, fallback = 'cost') {
@@ -5888,6 +5898,7 @@ app.whenReady().then(() => {
       claudePrepaidBalanceEnabled: parseBoolean(patch.claudePrepaidBalanceEnabled ?? settings.claudePrepaidBalanceEnabled, true),
       opencodeLocalLimitsEnabled: parseBoolean(patch.opencodeLocalLimitsEnabled ?? settings.opencodeLocalLimitsEnabled, false),
       showLimitUsed: parseBoolean(patch.showLimitUsed ?? settings.showLimitUsed, false),
+      quotaTokenEstimate: normalizeQuotaTokenEstimate(patch.quotaTokenEstimate ?? settings.quotaTokenEstimate),
       windowMaximized: parseBoolean(settings.windowMaximized, false),
       zoomFactor: clampZoom(patch.zoomFactor ?? settings.zoomFactor),
       ...normalizeTrayModeSettings({

@@ -17,7 +17,8 @@
     micode: '../../../assets/icons/xiaomi.svg',
     zcode: '../../../assets/icons/zai.svg',
     zaiteam: '../../../assets/icons/zai.svg',
-    thirdparty: '../../../assets/icons/newapi.svg'
+    thirdparty: '../../../assets/icons/newapi.svg',
+    dsh: '../../../assets/icons/dsh.svg'
   };
 
   function trayProviderIconSources(clientIds) {

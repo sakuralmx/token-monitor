@@ -561,6 +561,12 @@
                 <label class="inline-option"><input type="radio" name="showLimitUsed" value="used" id="showLimitUsedUsed" /><span data-i18n="settings.limits.barsUsed">Used</span></label>
               </div>
             </div>
+            <div class="quota-estimate-settings">
+              <label class="checkbox-label settings-item"><span class="settings-item-text"><span class="settings-item-title">GPT Token 额度估算</span></span><input id="quotaEstimateEnabledInput" type="checkbox" /></label>
+              <label><span>备用容量（可选）</span><input id="quotaEstimateCapacityInput" type="number" min="0" step="1000" placeholder="默认自动学习" /></label>
+              <label><span>外部使用安全预留（%）</span><input id="quotaEstimateReserveInput" type="number" min="0" max="100" step="1" /></label>
+              <p class="settings-note">系统会根据多个时间点的官方额度和本机缓存读取、缓存写入、未缓存输入及输出用量自动学习容量。只有在样本不足时才会使用备用容量。</p>
+            </div>
           </div>
         </div>
 
@@ -1435,6 +1441,7 @@
       <span id="floatingBubbleContent" aria-hidden="true">Σ</span>
     </button>
     <script src="../../shared/limitBalanceDisplay.js"></script>
+    <script src="../../shared/quotaTokenEstimate.js"></script>
     <script src="trayBars.js"></script>
     <script src="usageCharts.js"></script>
     <script src="homeOverview.js"></script>

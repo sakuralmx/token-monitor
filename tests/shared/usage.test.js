@@ -41,6 +41,18 @@ function recordWithLimits(extra = {}) {
   };
 }
 
+test('dsh reasoning is a disjoint output component', () => {
+  const period = extractUsageFromTokscale({ entries: [{
+    client: 'dsh', model: 'deepseek-v4-flash', input: 100, output: 20,
+    cacheRead: 300, cacheWrite: 40, reasoning: 5, messageCount: 1, cost: 0.01
+  }] });
+  assert.equal(period.totalTokens, 465);
+  assert.equal(period.outputTokens, 25);
+  assert.equal(period.cacheReadTokens, 300);
+  assert.equal(period.cacheWriteTokens, 40);
+  assert.equal(period.clients.dsh, 465);
+});
+
 test('mergeDeviceRecord preserves existing limits when incoming payload omits limits', () => {
   const existing = recordWithLimits();
   const incoming = {
