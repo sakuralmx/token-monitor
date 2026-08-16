@@ -35,7 +35,8 @@ const CORE_SOURCE_FILES = WORKER_SHARED_MODULES.map((name) => `src/shared/${name
 const NODE_RUNTIME_SOURCE_FILES = Object.freeze([
   'src/hub/server.js',
   'src/shared/http.js',
-  'src/shared/config.js'
+  'src/shared/config.js',
+  'src/shared/catalogStore.js'
 ]);
 const WORKER_RUNTIME_SOURCE_FILES = Object.freeze([
   'worker/src/index.js',
