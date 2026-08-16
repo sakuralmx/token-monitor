@@ -1,0 +1,72 @@
+{
+  "name": "token-monitor-rereview",
+  "id": "token-monitor-rereview",
+  "description": "重新异源审查 d139e9d..HEAD 的 T1-T11，使用 Grok 5.6、GLM 5.3、Claude 独立验证现有问题并寻找遗漏，原样落地 docs/review.md",
+  "captainSessionId": "session-f5e01595-a8e1-4550-92dc-fe245dbe96d7",
+  "createdAt": 1786905258123,
+  "members": [
+    {
+      "id": "f21d2e43-ceeb-4c79-b29f-7e2e791f10ef",
+      "name": "glm-reviewer",
+      "role": "数据一致性与同步状态机审查",
+      "provider": "yixin",
+      "model": "glm-5.3",
+      "joinedAt": 1786905425023,
+      "status": "removed"
+    },
+    {
+      "id": "8514ce09-1099-4e3f-b169-ccf111b05740",
+      "name": "claude-reviewer",
+      "role": "架构、部署与需求闭环审查",
+      "provider": "yixin",
+      "model": "claude-sonnet-5",
+      "joinedAt": 1786905425080,
+      "status": "removed"
+    },
+    {
+      "id": "c098ac9a-7a2a-4d55-96d4-d34f2bfdff58",
+      "name": "grok-reviewer",
+      "role": "安全隐私与攻击面审查",
+      "provider": "yixin",
+      "model": "grok-4.6",
+      "joinedAt": 1786905451488,
+      "status": "removed"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "subject": "GLM一致性复审",
+      "description": "独立复审 d139e9d..HEAD，重点 catalogStore SQL 冲突、tombstone、分页、catalogSync delta/rejected/delete/state、备份一致性。逐条验证 docs/review.md 现有问题，尝试推翻；保留无法推翻者，并寻找新问题。输出原始分级报告，含文件行、复现、修复建议。只读，不改代码。",
+      "status": "cancelled",
+      "assignee": "glm-reviewer",
+      "dependencies": [],
+      "createdAt": 1786905434243,
+      "updatedAt": 1786905649411,
+      "output": "yixin/glm-5.3 成员成功启动并读取任务，但在多次收尾指令后仍未产出审查报告；取消并保留原始运行记录。"
+    },
+    {
+      "id": "t2",
+      "subject": "Claude架构部署复审",
+      "description": "独立复审 d139e9d..HEAD，重点多设备 Catalog UI 闭环、API兼容、隐私、部署 README/nginx/certbot/backup 可执行性。逐条验证 docs/review.md，尝试推翻并报告结论与新问题。含证据、复现、修复建议。只读，不改代码。",
+      "status": "cancelled",
+      "assignee": "claude-reviewer",
+      "dependencies": [],
+      "createdAt": 1786905434323,
+      "updatedAt": 1786905656234,
+      "output": "yixin/claude-sonnet-5 成员成功启动并读取任务，但在多次收尾指令后仍未产出审查报告；取消并保留原始运行记录。"
+    },
+    {
+      "id": "t3",
+      "subject": "Grok安全隐私复审",
+      "description": "独立复审 d139e9d..HEAD，重点 sessionCatalog 白名单、三适配器正文/路径/凭据泄露、Hub认证授权、API滥用与资源边界。逐项尝试推翻 docs/review.md 现有结论并寻找遗漏。输出分级原始报告，含文件行、复现和修复建议。只读，不改代码。",
+      "status": "cancelled",
+      "assignee": "grok-reviewer",
+      "dependencies": [],
+      "createdAt": 1786905458307,
+      "updatedAt": 1786905627366,
+      "output": "yixin/grok-4.6 成员收到并 claim 任务但持续未产出；用户期望的 grok-5.6 在 yixin provider 中未配置。原始运行记录保留。"
+    }
+  ],
+  "taskSeq": 3
+}
