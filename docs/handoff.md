@@ -4,15 +4,27 @@
 
 ## 最近一轮
 
-- 时间：2026-08-16
-- 已完成：
-  - 协作流程初始化（dev-flow）：AGENTS.md 追加 dev-flow 层、`.dsh/skills/dev-flow/SKILL.md`、`docs/{plan,tasks,handoff,review}.md`、`docs/archive/.gitkeep`、`.gitignore` 追加规则（commit `3454910`）。
-  - DSH 客户端支持提交到 `personal` 分支（commit `32325b9`，32 文件 +543/−39），`feat/cherrystudio` 保持原样（仍在 `4f48bb4`）。
-- 验证方式：`git status` 工作树干净；`git log` 确认 `personal` = `feat/cherrystudio(4f48bb4)` + `32325b9` + `3454910`。
-- 已知问题：
-  - 本地 `main` 落后 `origin/main` 14 个提交（上游镜像待快进，不影响个人层）。
-  - `personal` 尚未推送到 fork（远端无 `fork/personal`）。
-- 给审查/下一轮的提示：分支与远程分工、日常循环见下方「个人化工作流」。
+- 时间：2026-08-17
+- 已完成：**T1–T11 全部实现**（个人多设备同步 + 会话目录计划），每个任务独立 commit：
+  - T1 `02a1d2d` deploy/ 模板（systemd/nginx/certbot/健康检查/升级回滚备份）
+  - T2 `f6082de` Hub 连接测试错误分类 + Test connection 按钮（5 语言）
+  - T3 `03ed48e` docs/API.md 会话目录协议（upsert/分页/invalidate/降级）
+  - T4 `cd5ea33` sessionCatalog.js 统一模型 + 隐私清洗（白名单字段、NFC/控制字符/代理对、稳定工作区键）
+  - T5 `54adc3a` Cherry Studio 适配器（Claude Code transcripts，根目录与 collector 共享）
+  - T6 `f42a2df` Codex 适配器（sessions/archived_sessions 日期分区，Win/macOS/WSL fixture）
+  - T7 `d143a80` DSH 适配器（session.jsonl.zstd，zstd 特性检测：CLI→fzstd→清晰不可用态）
+  - T8 `90be4c4` Hub SQLite 永久目录（node:sqlite，schema 迁移、幂等 upsert、tombstone、VACUUM INTO 备份、批量限制）
+  - T9 `ccb9d06`+`0b8369b` 增量同步（delta 计算、分批、断网重试不重复、widget/agent 接入、catalogEnabled 开关）
+  - T10 `11b8802` Catalog 视图（按工作区分组、折叠、筛选、空态/禁用态、长标题省略）
+  - T11 `0af5213` hub build 闭包注册 + `.env.example`；真实 hub E2E 冒烟通过
+- 验证方式：`npm run lint` 干净；`node --test` 3177 项中仅剩 1 个环境性失败（`macWidgetLaunchServicesRecovery` 需 symlink 特权，Windows 上改动前即失败）；真实 Node hub E2E 验证了 upsert 幂等、stale 写冲突拒绝、分页、重启持久化、secret 门禁、备份恢复、tombstone。
+- 已知问题 / 待办：
+  - 部署到阿里云 ECS 的真实服务器验收（deploy/README.md 流程）尚未执行——需要真实服务器与域名/IP 证书。
+  - 会话目录的「两台设备错峰互看」真实设备验收未执行（无第二台设备）。
+  - DSH zstd 解压在本机无后端时显示不可用（`zstdAvailable: false`）；装了系统 zstd 或 fzstd 即可启用。
+  - 本地 `main` 落后 `origin/main`（上游镜像待快进）；`personal` 尚未推送到 fork。
+  - 审查（docs/review.md）尚未执行：按 dev-flow，下一轮应跑「你来审查」。
+- 给审查/下一轮的提示：审查范围默认本次 T1–T11 增量（相对 d139e9d）；重点看隐私边界（sessionCatalog 白名单、适配器路径处理）、SQLite 冲突 SQL、catalogSync 状态机。
 
 ## 个人化工作流
 
