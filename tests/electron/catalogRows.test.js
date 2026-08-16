@@ -43,14 +43,22 @@ test('groups entries by workspace with counts and lastUsedAt-desc order', () => 
   assert.equal(model.allSessions.count, 3);
 });
 
-test('dedupes the same session across devices keeping the newer copy', () => {
+test('dedupes by the full primary key, never merging across devices', () => {
   const entries = [
     entry({ deviceId: 'macbook', lastUsedAt: '2026-08-10T01:00:00.000Z', updatedAt: '2026-08-10T01:00:00.000Z', title: 'old copy' }),
     entry({ deviceId: 'desktop', lastUsedAt: '2026-08-11T01:00:00.000Z', updatedAt: '2026-08-11T01:00:00.000Z', title: 'new copy' })
   ];
   const deduped = dedupe(entries);
-  assert.equal(deduped.length, 1);
-  assert.equal(deduped[0].title, 'new copy');
+  // Different deviceId → distinct primary keys → both kept (protocol has no
+  // cross-device stable identity to merge on).
+  assert.equal(deduped.length, 2);
+  // Duplicate exact primary key keeps the newer copy.
+  const dup = dedupe([
+    entry({ deviceId: 'macbook', lastUsedAt: '2026-08-10T01:00:00.000Z', updatedAt: '2026-08-10T01:00:00.000Z', title: 'old' }),
+    entry({ deviceId: 'macbook', lastUsedAt: '2026-08-11T01:00:00.000Z', updatedAt: '2026-08-11T01:00:00.000Z', title: 'new' })
+  ]);
+  assert.equal(dup.length, 1);
+  assert.equal(dup[0].title, 'new');
 });
 
 test('client filter narrows groups; unknown workspace label falls back', () => {

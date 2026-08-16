@@ -54,6 +54,7 @@ const { applyCustomPricing, normalizeCustomPricingSetting } = require('../shared
 const { createHub } = require('../hub/server');
 const { probeHubBuild } = require('./hubBuildStatus');
 const { createCatalogSyncController } = require('./catalogSyncController');
+const { fetchHubCatalogEntries } = require('../shared/catalogSync');
 const { scanCherryStudioSessions } = require('../shared/cherryStudioSessions');
 const { scanCodexSessions } = require('../shared/codexSessions');
 const { scanDshSessions } = require('../shared/dshSessions');
@@ -4629,6 +4630,22 @@ function getLocalCatalogEntries() {
   return { entries, enabled: true, zstdAvailable: dshResult.zstdAvailable !== false };
 }
 
+// Catalog view in client/host mode: read the *permanent* catalog from the hub
+// (paginated, authenticated), so device B shows sessions device A uploaded even
+// when A is offline. Falls back to the local scan when the hub is unreachable
+// or does not implement the catalog, so the view never hard-fails.
+async function getHubCatalogEntries() {
+  if (settings?.catalogEnabled === false) return { entries: [], enabled: false };
+  const { url: hubUrl, secret } = effectiveHubConfig();
+  const local = getLocalCatalogEntries();
+  if (!hubUrl) return { ...local, source: 'local' };
+  const remote = await fetchHubCatalogEntries({ fetchFn: fetch, baseUrl: hubUrl, secret });
+  if (remote.source === 'hub') {
+    return { entries: remote.entries, enabled: true, zstdAvailable: true, source: 'hub' };
+  }
+  return { ...local, source: 'local', hubReason: remote.reason };
+}
+
 function startMode() {
   hubModeGeneration += 1;
   advanceMacWidgetProducerAndSourceEpoch();
@@ -6269,6 +6286,7 @@ app.whenReady().then(() => {
   ipcMain.handle('hub:getBuildStatus', () => getHubBuildStatus());
   ipcMain.handle('hub:testConnection', () => testHubConnection());
   ipcMain.handle('catalog:getLocal', () => getLocalCatalogEntries());
+  ipcMain.handle('catalog:getHub', () => getHubCatalogEntries());
   ipcMain.handle('hub:regenerateSecret', () => {
     settings.hubHostSecret = generateHubSecret();
     saveSettings({ throwOnError: true });

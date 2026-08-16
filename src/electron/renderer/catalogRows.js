@@ -27,13 +27,15 @@
     return `${entry.deviceId}|${entry.client}|${entry.sessionId}`;
   }
 
-  // Dedupe across devices by (client, sessionId): the same session synced from
-  // two machines is one row; the most recently updated copy wins.
+  // Dedupe by the full protocol primary key (deviceId + client + sessionId).
+  // Collapsing on client+sessionId alone would wrongly merge two devices that
+  // independently generated the same sessionId, hiding a real session. The
+  // protocol has no cross-device stable identity, so dedupe must not invent one.
   function dedupe(entries) {
     const byKey = new Map();
     for (const entry of entries || []) {
       if (!entry || !entry.sessionId || !entry.client) continue;
-      const key = `${entry.client}|${entry.sessionId}`;
+      const key = entryKey(entry);
       const existing = byKey.get(key);
       if (!existing || lastUsedAtMs(entry) > lastUsedAtMs(existing)) byKey.set(key, entry);
     }
