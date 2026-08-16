@@ -10,7 +10,7 @@
 //
 // All IO is injected (fs/os/adapters/fetch/state store) so tests run in memory.
 
-const { computeCatalogDelta, uploadCatalogDelta } = require('./catalogSync');
+const { checkpointAccepted, computeCatalogDelta, uploadCatalogDelta } = require('./catalogSync');
 
 function catalogStateForDevice(state = {}, deviceId = '') {
   if (!deviceId) return state || {};
@@ -36,19 +36,28 @@ async function runCatalogSync({
   const deviceState = catalogStateForDevice(state, deviceId);
 
   // Scan each adapter; a failing adapter is isolated (never aborts the cycle).
+  // An adapter may optionally return { entries, deletes } — deletes are explicit
+  // soft-delete requests (e.g. a future "remove from catalog" UI). The local
+  // adapters (T5/T6/T7) only produce entries; they deliberately do NOT infer a
+  // delete from a session vanishing from a scan, because a collection gap must
+  // never erase a permanent record (docs/API.md invalidate semantics).
   const entries = [];
+  const deletes = [];
   for (const adapter of adapters || []) {
     if (typeof adapter.scan !== 'function') continue;
     try {
       const result = adapter.scan();
       const list = Array.isArray(result) ? result : (result?.entries || []);
       entries.push(...list);
+      if (result && !Array.isArray(result) && Array.isArray(result.deletes)) {
+        deletes.push(...result.deletes);
+      }
     } catch (error) {
       if (typeof logger === 'function') logger(`[catalog] adapter scan failed: ${error.message}`);
     }
   }
 
-  const delta = computeCatalogDelta({ state: deviceState, entries });
+  const delta = computeCatalogDelta({ state: deviceState, entries, deletes });
   if (delta.upserts.length === 0 && delta.invalidateKeys.length === 0) {
     return {
       scanned: entries.length,
@@ -92,16 +101,19 @@ async function runCatalogSync({
         error: null
       };
     }
-    // Only advance the state after the upload was accepted; a transport error
-    // below leaves it untouched so the same delta retries next tick.
+    // Only advance the state for the entries the hub accepted; rejected entries
+    // keep their previous state so the next cycle retries them. A transport
+    // error below leaves everything untouched so the same delta retries.
+    const nextState = checkpointAccepted({ nextState: delta.nextState, rejectedKeys: result.rejectedKeys });
     return {
       scanned: entries.length,
       upserted: result.accepted,
       invalidated: result.invalidated,
+      rejected: result.rejectedKeys?.length || 0,
       unavailable: false,
       skipped: false,
       error: null,
-      nextState: mergeCatalogState(state, deviceId, delta.nextState)
+      nextState: mergeCatalogState(state, deviceId, nextState)
     };
   } catch (error) {
     return {

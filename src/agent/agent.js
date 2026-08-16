@@ -120,18 +120,27 @@ async function postUsage(summary) {
 }
 
 // Session catalog sync state, persisted next to the agent pid file so a restart
-// resumes where the last successful upload left off.
+// resumes where the last successful upload left off. Written atomically (temp +
+// rename) so a crash mid-write cannot leave a truncated JSON that would force a
+// full re-upload; a corrupt file is reported loudly rather than silently
+// restarting from empty.
 function readCatalogSyncState() {
   const file = path.join(path.dirname(pidFilePath()), 'catalog-sync-state.json');
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (_) { return {}; }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn(`[catalog] could not read sync state (${error.message}); starting fresh`);
+    return {};
+  }
 }
 
 function writeCatalogSyncState(state) {
   const file = path.join(path.dirname(pidFilePath()), 'catalog-sync-state.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  const temp = `${file}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  fs.renameSync(temp, file);
 }
 
 async function syncSessionCatalog() {

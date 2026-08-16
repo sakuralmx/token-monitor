@@ -125,6 +125,27 @@ test('a failing adapter is isolated and does not abort the cycle', async () => {
   assert.equal(report.upserted, 1);
 });
 
+test('an adapter returning explicit deletes forwards them to the hub', async () => {
+  let invalidateBody = null;
+  const adapter = {
+    scan: () => ({
+      entries: [entry()],
+      deletes: [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1' }]
+    })
+  };
+  const report = await runCatalogSync({
+    deviceId: 'macbook', state: {}, adapters: [adapter],
+    baseUrl: 'https://hub.example',
+    fetchFn: async (url, options) => {
+      const body = JSON.parse(options.body);
+      if (url.endsWith('/invalidate')) invalidateBody = body;
+      return { ok: true, status: 200, async json() { return { ok: true, accepted: body.entries?.length || 0, invalidated: body.keys?.length || 0 }; } };
+    }
+  });
+  assert.equal(report.invalidated, 1);
+  assert.deepEqual(invalidateBody.keys, [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1' }]);
+});
+
 test('device-scoped state helpers round-trip', () => {
   assert.deepEqual(catalogStateForDevice({}, 'macbook'), {});
   assert.deepEqual(catalogStateForDevice({ macbook: { k: 1 } }, 'macbook'), { k: 1 });
