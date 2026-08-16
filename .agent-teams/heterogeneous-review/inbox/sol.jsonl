@@ -1,0 +1,5 @@
+{"id":"249f4055-74fe-4650-9418-6bc158989e1f","from":"captain","to":"sol","content":"请立即认领 t2 并开始审查，重点 SQLite/catalog sync/tombstone/conflict/checkpoint；只读，完成后更新任务并回传逐条证据。","ts":1786909519805,"deliveredAt":1786909519806,"readAt":1786909519806}
+{"id":"0bf42a61-002e-45e0-bcfc-573b565d3b5b","from":"captain","to":"sol","content":"按插件流程，请在审查中自行调用 checkup 或 review 做对抗式验证；报告保留原始结论。","ts":1786909527553,"deliveredAt":1786909527555,"readAt":1786909527555}
+{"id":"7b7b2f3d-f768-429a-94eb-fef127a8295b","from":"captain","to":"sol","content":"请更新 t2 为 completed，output 中逐条列出两项问题、证据、严重级别、复现与建议，并注明 focused tests 通过但未覆盖。","ts":1786909600140,"deliveredAt":1786909600147,"readAt":1786909600147}
+{"id":"41094207-de43-4e59-9332-988cad58d0ed","from":"captain","to":"sol","content":"请把 unknown-key invalidate race 作为独立问题，立即更新 t2 completed。","ts":1786909627303,"deliveredAt":1786909627305,"readAt":1786909627305}
+{"id":"40c97577-2d45-4858-8373-89509ba566e2","from":"captain","to":"sol","content":"请立即 update_task completed，汇总已有 findings（可不再等待）。","ts":1786909644723,"deliveredAt":1786909644725,"readAt":1786909644725}

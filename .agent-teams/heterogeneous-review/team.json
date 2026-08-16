@@ -1,0 +1,96 @@
+{
+  "name": "heterogeneous-review",
+  "id": "heterogeneous-review",
+  "description": "对 token-monitor 当前 personal 分支做异源对抗式审查，重点复核最近会话目录修复及全量关键数据流，输出逐条问题、证据、复现和建议；不修改代码。",
+  "captainSessionId": "session-d81ae889-0f60-420c-977f-005919821e22",
+  "createdAt": 1786909478197,
+  "members": [
+    {
+      "id": "0127fdd4-790b-4f8c-bb84-f55df88fd000",
+      "name": "terra",
+      "role": "安全与协议审查员",
+      "provider": "yx",
+      "model": "gpt-5.6-terra",
+      "joinedAt": 1786909483321,
+      "status": "idle"
+    },
+    {
+      "id": "ca3f8b53-a99e-409c-b834-1bbc22ca43c3",
+      "name": "sol",
+      "role": "数据一致性与存储审查员",
+      "provider": "yx",
+      "model": "gpt-5.6-sol",
+      "joinedAt": 1786909495640,
+      "status": "idle"
+    },
+    {
+      "id": "61044413-d799-4391-ac55-8e11bea592a6",
+      "name": "flash",
+      "role": "边界、部署与运行时审查员",
+      "provider": "deepseek-official",
+      "model": "deepseek-v4-flash",
+      "reasoningEffort": "high",
+      "joinedAt": 1786909495658,
+      "status": "idle"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "subject": "安全与协议异源审查",
+      "description": "审查当前 personal 分支相对最近修复及全量关键网络协议、认证、隐私边界、输入校验和 API；只读，不改代码。输出严重/一般/建议问题，逐条给文件行号、触发条件、影响、复现思路和修复建议。重点 catalog endpoints、sync、hub auth、部署 HTTPS。",
+      "status": "completed",
+      "assignee": "terra",
+      "dependencies": [],
+      "attempt": 1,
+      "createdAt": 1786909505858,
+      "updatedAt": 1786909679925,
+      "attemptId": "778e4489-b3d7-421a-8103-defdb78cd486",
+      "reassigning": false,
+      "output": "只读完成 auth/API/privacy/deploy 审查。确认 server.js:216 统一认证门禁覆盖 catalog、stats、subscriptions；health 是唯一无认证且不泄露数据。发现并回传：1) 严重隐私：catalogStore.entryToRow/isValidKey 未调用 sessionCatalog.normalizeCatalogEntry，合法 secret 客户端可写入 workspace 绝对路径/用户名及未严格清洗 title，永久保存并经 GET 泄露，违反 docs/API.md 423/443。2) API 漂移：文档 569 称 malformed invalidate keys 会计数，实现 355-357 直接忽略，仅返回 invalidated。3) tombstone 文档/实现冲突：docs 513/569 描述复活/updatedAt bump，实现 invalidate 不 bump、同时间 fallback 无 deletedAt 不复活。4) Deploy：nginx exact /api/stats/stream location 未继承通用 limit_req（server 通用 location 限速不适用 exact location），认证用户可反复建立 SSE 消耗每连接 socket+heartbeat，存在资源耗尽风险；建议显式限速/连接并发限制。systemd loopback/TLS/auth 门禁未发现 bypass。"
+    },
+    {
+      "id": "t2",
+      "subject": "一致性与持久化异源审查",
+      "description": "审查会话目录数据模型、SQLite store、墓碑/冲突 winner、增量同步、checkpoint/rejected、分页和跨设备合并；只读，不改代码。对抗式寻找已修复问题回归及新问题，逐条给证据、严重级别、复现和建议。",
+      "status": "completed",
+      "assignee": "sol",
+      "dependencies": [],
+      "attempt": 1,
+      "createdAt": 1786909505955,
+      "updatedAt": 1786909650180,
+      "attemptId": "df016909-83e4-4199-a8c5-62dd4f4a9545",
+      "reassigning": false,
+      "output": "审查发现并已报告队长：catalogStore tombstone winner 未比较 deleted_at，删除后旧但较新的 updatedAt 可复活；invalidate unknown key 不建 tombstone，删除先于上传可复活；invalidate 无事件时间/版本保护，延迟旧删除可覆盖新复活；mergeRemoteCatalog 同时间未遵守 local 优先。未修改代码。"
+    },
+    {
+      "id": "t3",
+      "subject": "运行时与部署异源审查",
+      "description": "审查 collector/main/hub runtime、部署脚本、备份恢复、资源边界、错误处理、兼容性及测试覆盖；只读，不改代码。输出分级问题与证据，重点最近 5 个修复是否引入新缺陷。",
+      "status": "completed",
+      "assignee": "captain",
+      "dependencies": [],
+      "attempt": 3,
+      "createdAt": 1786909506049,
+      "updatedAt": 1786909774083,
+      "reassigning": false,
+      "attemptId": "5deedb09-06a4-4415-b66a-c65823061b4b",
+      "output": "运行时/部署复核完成：systemd 强制 loopback，nginx TLS 代理及备份 VACUUM INTO/quick_check 路径未发现新的严重缺陷。发现一般问题：deploy/nginx/token-monitor-hub.conf 的 exact-match SSE location /api/stats/stream 未配置 limit_req/limit_conn，且不会继承通用 location 的限流；持有共享 secret 的客户端可建立大量长连接，消耗 Hub socket、heartbeat timer 与 nginx 连接资源。建议为 SSE 单设 limit_conn 与合理连接上限，并补部署验证。"
+    },
+    {
+      "id": "t4",
+      "subject": "队长综合审查",
+      "description": "对当前 personal 分支做独立全量审查，重点变更基线 0af5213..HEAD 及 docs/review.md 已修复 11 项；只读，不改代码。可运行针对性测试，报告最可能漏网的严重/一般问题及验证结果。",
+      "status": "in_progress",
+      "dependencies": [],
+      "attempt": 2,
+      "createdAt": 1786909506344,
+      "updatedAt": 1786909784709,
+      "assignee": "captain",
+      "reassigning": false,
+      "attemptId": "d2343f8c-e85a-4c70-acdc-23b054dba53e",
+      "output": "队长汇总异源问题与验证结果，准备落地 docs/review.md。"
+    }
+  ],
+  "taskSeq": 4
+}
