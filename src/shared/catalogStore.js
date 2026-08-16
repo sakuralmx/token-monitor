@@ -163,6 +163,22 @@ function createCatalogStore({ file, logger = console } = {}) {
     }
   }
 
+  // Whole-record winner rule. Every field — including workspace metadata and the
+  // soft-delete tombstone — follows the same conflict rule as the title: the
+  // incoming row wins when its updated_at is strictly newer, or when it ties on
+  // updated_at and is a `local` titleSource upgrading an existing `fallback`.
+  // A stale re-upload therefore cannot resurrect a deleted session (the deleted_at
+  // tombstone stays put unless the winner itself clears it), and a stale
+  // workspace label cannot overwrite a newer one. Explicit resurrection remains
+  // possible, but only from a row that actually wins the conflict.
+  const winnerExpr = `(
+    excluded.updated_at > catalog_entries.updated_at
+    OR (
+      excluded.updated_at = catalog_entries.updated_at
+      AND excluded.title_source = 'local'
+      AND catalog_entries.title_source != 'local'
+    )
+  )`;
   const upsertStmt = db.prepare(`
     INSERT INTO catalog_entries
       (device_id, client, session_id, workspace_key, workspace_label, title,
@@ -170,33 +186,17 @@ function createCatalogStore({ file, logger = console } = {}) {
        cost_usd, updated_at, deleted_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id, client, session_id) DO UPDATE SET
-      workspace_key   = excluded.workspace_key,
-      workspace_label = excluded.workspace_label,
-      title           = CASE
-        WHEN excluded.updated_at > catalog_entries.updated_at THEN excluded.title
-        WHEN excluded.updated_at = catalog_entries.updated_at
-          AND excluded.title_source = 'local'
-          AND catalog_entries.title_source != 'local' THEN excluded.title
-        ELSE catalog_entries.title
-      END,
-      title_source    = CASE
-        WHEN excluded.updated_at > catalog_entries.updated_at THEN excluded.title_source
-        WHEN excluded.updated_at = catalog_entries.updated_at
-          AND excluded.title_source = 'local'
-          AND catalog_entries.title_source != 'local' THEN excluded.title_source
-        ELSE catalog_entries.title_source
-      END,
-      started_at      = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.started_at ELSE catalog_entries.started_at END,
-      last_used_at    = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.last_used_at ELSE catalog_entries.last_used_at END,
-      message_count   = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.message_count ELSE catalog_entries.message_count END,
-      total_tokens    = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.total_tokens ELSE catalog_entries.total_tokens END,
-      cost_usd        = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.cost_usd ELSE catalog_entries.cost_usd END,
-      updated_at      = CASE WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.updated_at ELSE catalog_entries.updated_at END,
-      deleted_at      = CASE
-        WHEN excluded.deleted_at IS NULL AND catalog_entries.deleted_at IS NOT NULL THEN NULL
-        WHEN excluded.updated_at >= catalog_entries.updated_at THEN excluded.deleted_at
-        ELSE catalog_entries.deleted_at
-      END
+      workspace_key   = CASE WHEN ${winnerExpr} THEN excluded.workspace_key ELSE catalog_entries.workspace_key END,
+      workspace_label = CASE WHEN ${winnerExpr} THEN excluded.workspace_label ELSE catalog_entries.workspace_label END,
+      title           = CASE WHEN ${winnerExpr} THEN excluded.title ELSE catalog_entries.title END,
+      title_source    = CASE WHEN ${winnerExpr} THEN excluded.title_source ELSE catalog_entries.title_source END,
+      started_at      = CASE WHEN ${winnerExpr} THEN excluded.started_at ELSE catalog_entries.started_at END,
+      last_used_at    = CASE WHEN ${winnerExpr} THEN excluded.last_used_at ELSE catalog_entries.last_used_at END,
+      message_count   = CASE WHEN ${winnerExpr} THEN excluded.message_count ELSE catalog_entries.message_count END,
+      total_tokens    = CASE WHEN ${winnerExpr} THEN excluded.total_tokens ELSE catalog_entries.total_tokens END,
+      cost_usd        = CASE WHEN ${winnerExpr} THEN excluded.cost_usd ELSE catalog_entries.cost_usd END,
+      updated_at      = CASE WHEN ${winnerExpr} THEN excluded.updated_at ELSE catalog_entries.updated_at END,
+      deleted_at      = CASE WHEN ${winnerExpr} THEN excluded.deleted_at ELSE catalog_entries.deleted_at END
   `);
 
   // Per-key normalization gate (client enum + required identity) mirrors the
@@ -222,11 +222,21 @@ function createCatalogStore({ file, logger = console } = {}) {
     }
     let accepted = 0;
     let rejected = 0;
+    const rejectedKeys = [];
     db.exec('BEGIN');
     try {
       for (const raw of entries) {
         const entry = { ...raw, client: String(raw?.client || '').toLowerCase() };
-        if (!isValidKey(entry)) { rejected += 1; continue; }
+        if (!isValidKey(entry)) {
+          rejected += 1;
+          rejectedKeys.push({
+            deviceId: String(raw?.deviceId || '').trim(),
+            client: String(raw?.client || '').toLowerCase(),
+            sessionId: String(raw?.sessionId || '').trim(),
+            reason: 'invalid_entry'
+          });
+          continue;
+        }
         const row = entryToRow(entry);
         upsertStmt.run(
           row.deviceId, row.client, row.sessionId, row.workspaceKey, row.workspaceLabel,
@@ -240,7 +250,7 @@ function createCatalogStore({ file, logger = console } = {}) {
       db.exec('ROLLBACK');
       throw error;
     }
-    return { accepted, rejected };
+    return { accepted, rejected, rejectedKeys };
   }
 
   function listSessions({
@@ -265,7 +275,14 @@ function createCatalogStore({ file, logger = console } = {}) {
     if (workspace) { clauses.push('workspace_key = ?'); params.push(cleanText(workspace, 120)); }
     if (since) {
       const sinceIso = isoOf(since);
-      if (sinceIso) { clauses.push('updated_at > ?'); params.push(sinceIso); }
+      // Incremental reads converge on either a content update (updated_at) or a
+      // soft-delete tombstone (deleted_at). The tombstone leaves updated_at at
+      // the entry's last content time, so since-based readers still observe a
+      // delete that happened after their last read.
+      if (sinceIso) {
+        clauses.push('(updated_at > ? OR (deleted_at IS NOT NULL AND deleted_at > ?))');
+        params.push(sinceIso, sinceIso);
+      }
     }
     if (!includeDeleted) clauses.push('deleted_at IS NULL');
 
@@ -323,8 +340,13 @@ function createCatalogStore({ file, logger = console } = {}) {
       throw error;
     }
     const now = new Date().toISOString();
+    // Set deleted_at only; keep updated_at at the entry's last content time so a
+    // client's explicit resurrection (a re-upload with a newer content time) can
+    // still win the whole-record conflict. Bumping updated_at here would make the
+    // tombstone newer than every historical re-upload, silently blocking the
+    // documented "re-upload without deletedAt resurrects it" behaviour.
     const tombstoneStmt = db.prepare(`
-      UPDATE catalog_entries SET deleted_at = ?, updated_at = ?
+      UPDATE catalog_entries SET deleted_at = ?
       WHERE device_id = ? AND client = ? AND session_id = ?
     `);
     let invalidated = 0;
@@ -332,7 +354,7 @@ function createCatalogStore({ file, logger = console } = {}) {
     try {
       for (const key of keys || []) {
         if (!key || !key.deviceId || !key.sessionId || !VALID_CLIENTS.has(String(key.client || '').toLowerCase())) continue;
-        const result = tombstoneStmt.run(now, now, cleanText(key.deviceId, 100), String(key.client).toLowerCase(), cleanText(key.sessionId, 200));
+        const result = tombstoneStmt.run(now, cleanText(key.deviceId, 100), String(key.client).toLowerCase(), cleanText(key.sessionId, 200));
         invalidated += result.changes;
       }
       db.exec('COMMIT');

@@ -43,9 +43,9 @@ test('upsert is idempotent: same key + same data does not duplicate or error', {
   const { store, dir } = makeStore();
   try {
     const first = store.upsertEntries([entry()]);
-    assert.deepEqual(first, { accepted: 1, rejected: 0 });
+    assert.deepEqual(first, { accepted: 1, rejected: 0, rejectedKeys: [] });
     const second = store.upsertEntries([entry()]);
-    assert.deepEqual(second, { accepted: 1, rejected: 0 });
+    assert.deepEqual(second, { accepted: 1, rejected: 0, rejectedKeys: [] });
     const listed = store.listSessions({});
     assert.equal(listed.entries.length, 1);
   } finally {
@@ -82,6 +82,40 @@ test('conflict tie: local titleSource beats fallback', { skip: !sqliteAvailable 
   }
 });
 
+test('stale upsert cannot resurrect a deleted session (tombstone survives)', { skip: !sqliteAvailable }, () => {
+  const { store, dir } = makeStore();
+  try {
+    store.upsertEntries([entry({ updatedAt: '2026-08-10T01:00:00.000Z' })]);
+    store.invalidateKeys([{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1' }]);
+    // Replay the same old upsert (stale relative to the tombstone's write time).
+    store.upsertEntries([entry({ updatedAt: '2026-08-10T01:00:00.000Z' })]);
+    assert.equal(store.listSessions({}).entries.length, 0); // still deleted
+    const withDeleted = store.listSessions({ includeDeleted: true });
+    assert.equal(withDeleted.entries.length, 1);
+    assert.ok(withDeleted.entries[0].deletedAt);
+    // A genuinely newer upsert without deletedAt wins and resurrects.
+    store.upsertEntries([entry({ updatedAt: '2026-08-11T01:00:00.000Z' })]);
+    assert.equal(store.listSessions({}).entries.length, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('stale workspace metadata does not overwrite a newer workspace', { skip: !sqliteAvailable }, () => {
+  const { store, dir } = makeStore();
+  try {
+    store.upsertEntries([entry({ workspaceKey: 'sha256:new', workspaceLabel: 'new-workspace', updatedAt: '2026-08-10T02:00:00.000Z' })]);
+    store.upsertEntries([entry({ workspaceKey: 'sha256:stale', workspaceLabel: 'stale-workspace', updatedAt: '2026-08-10T00:30:00.000Z' })]);
+    const [row] = store.listSessions({}).entries;
+    assert.equal(row.workspaceLabel, 'new-workspace');
+    assert.equal(row.workspaceKey, 'sha256:new');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('invalid entries are rejected individually, valid ones accepted', { skip: !sqliteAvailable }, () => {
   const { store, dir } = makeStore();
   try {
@@ -93,7 +127,9 @@ test('invalid entries are rejected individually, valid ones accepted', { skip: !
       null,
       'junk'
     ]);
-    assert.deepEqual(result, { accepted: 1, rejected: 5 });
+    assert.equal(result.accepted, 1);
+    assert.equal(result.rejected, 5);
+    assert.equal(result.rejectedKeys.length, 5);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -123,8 +159,8 @@ test('soft delete tombstones and hides by default, resurrect on re-upload', { sk
     const withDeleted = store.listSessions({ includeDeleted: true });
     assert.equal(withDeleted.entries.length, 1);
     assert.ok(withDeleted.entries[0].deletedAt);
-    // Re-upload without deletedAt resurrects.
-    store.upsertEntries([entry()]);
+    // Re-upload with a newer content time (without deletedAt) resurrects.
+    store.upsertEntries([entry({ updatedAt: '2026-08-11T01:00:00.000Z' })]);
     assert.equal(store.listSessions({}).entries.length, 1);
   } finally {
     store.close();
