@@ -36,6 +36,7 @@ const { findSessionFiles, codexSessionFile } = require('./sessionFiles');
 const opencodeSession = require('./opencodeSession');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./promaUsage');
 const { resolveReasonixStatsDir, REASONIX_SOURCE_CHECK_ID } = require('./reasonixPaths');
+const { cherryStudioRoots } = require('./cherryStudioSessions');
 const {
   createReasonixNativeSessionCache,
   isReasonixNativeSessionPath,
@@ -1412,14 +1413,10 @@ function clientSourceRoots(clientsCsv) {
   // `<appdata>/CherryStudio/Data/Agents/.claude/projects`; the legacy root
   // keeps the pre-V2 snapshot. Both are watched; tokscale dedupes same-named
   // sessions (V2 copy wins, legacy fills in sessions V2 lacks).
-  const cherryAppDataRoots = [
-    path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'CherryStudio', 'Data', 'Agents', '.claude', 'projects'),
-    path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'CherryStudio', '.claude', 'projects'),
-    path.join(home, 'Library', 'Application Support', 'CherryStudio', 'Data', 'Agents', '.claude', 'projects'),
-    path.join(home, 'Library', 'Application Support', 'CherryStudio', '.claude', 'projects'),
-    path.join(nonBlankEnvPath('XDG_CONFIG_HOME', path.join(home, '.config')), 'CherryStudio', 'Data', 'Agents', '.claude', 'projects'),
-    path.join(nonBlankEnvPath('XDG_CONFIG_HOME', path.join(home, '.config')), 'CherryStudio', '.claude', 'projects')
-  ];
+  //
+  // Root resolution lives in cherryStudioSessions.js (shared with the session
+  // catalog adapter) so the catalog can never drift from what tokscale scans.
+  const cherryAppDataRoots = cherryStudioRoots({ home });
   add(
     'cherrystudio',
     ...[...new Set(cherryAppDataRoots)].map((dir) => ['cherrystudio-transcripts', dir])
