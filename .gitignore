@@ -23,3 +23,7 @@ worker/.wrangler/
 worker/node_modules/
 worker/.dev.vars
 devlog/
+# dev-flow
+# Godot
+.godot/
+# Node
