@@ -96,15 +96,50 @@ test('delta handles multiple clients/ids independently', () => {
   assert.equal(second.upserts.length, 0);
 });
 
-test('explicit deletes become invalidate keys and tombstone local state', () => {
+test('explicit deletes become invalidate keys (with a stable event time) and tombstone local state', () => {
   const first = computeCatalogDelta({ entries: [entry()] });
   const deleted = computeCatalogDelta({
     state: first.nextState,
     entries: [],
     deletes: [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1' }]
   });
-  assert.deepEqual(deleted.invalidateKeys, [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1' }]);
+  assert.equal(deleted.invalidateKeys.length, 1);
+  assert.equal(deleted.invalidateKeys[0].deviceId, 'macbook');
+  assert.equal(deleted.invalidateKeys[0].client, 'codex');
+  assert.equal(deleted.invalidateKeys[0].sessionId, 'rollout-1');
+  assert.ok(deleted.invalidateKeys[0].deletedAt); // carries a client event time
   assert.ok(deleted.nextState[entryKey(entry())].deletedAt);
+});
+
+test('a delete keeps its own event time for idempotent retries', () => {
+  const first = computeCatalogDelta({ entries: [entry()] });
+  const deleted = computeCatalogDelta({
+    state: first.nextState,
+    entries: [],
+    deletes: [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1', deletedAt: '2026-08-10T02:00:00.000Z' }]
+  });
+  assert.equal(deleted.invalidateKeys[0].deletedAt, '2026-08-10T02:00:00.000Z');
+});
+
+test('an entry that reappears after an explicit delete is resurrected with a newer event time', () => {
+  const first = computeCatalogDelta({ entries: [entry()] });
+  const deleted = computeCatalogDelta({
+    state: first.nextState,
+    entries: [],
+    deletes: [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1', deletedAt: '2026-08-10T02:00:00.000Z' }]
+  });
+  assert.ok(deleted.nextState[entryKey(entry())].deletedAt);
+  // The exact same local entry reappears (no newer content time): it must be
+  // uploaded as an explicit resurrection, not silently kept as a tombstone.
+  const resurrected = computeCatalogDelta({
+    state: deleted.nextState,
+    entries: [entry()],
+    deletes: []
+  });
+  assert.equal(resurrected.upserts.length, 1);
+  const [re] = resurrected.upserts;
+  assert.ok(re.updatedAt > '2026-08-10T02:00:00.000Z'); // strictly newer than the delete
+  assert.equal(resurrected.nextState[entryKey(entry())].deletedAt, undefined); // tombstone cleared
 });
 
 test('a vanished session without an explicit delete is not invalidated', () => {
@@ -198,6 +233,37 @@ test('uploadCatalogDelta throws on non-catalog 404s', async () => {
   );
 });
 
+test('uploadCatalogDelta surfaces invalidate-rejected keys so they are not checkpointed', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/invalidate')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            ok: true,
+            invalidated: 1,
+            rejected: 1,
+            rejectedKeys: [{ deviceId: 'macbook', client: 'unknown', sessionId: 'bad', reason: 'invalid_key' }]
+          };
+        }
+      };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, accepted: 0, rejected: 0 }; } };
+  };
+  const result = await uploadCatalogDelta({
+    upserts: [],
+    invalidateKeys: [
+      { deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1', deletedAt: '2026-08-10T02:00:00.000Z' },
+      { deviceId: 'macbook', client: 'unknown', sessionId: 'bad' }
+    ],
+    fetchFn: fetchImpl,
+    baseUrl: 'https://hub.example'
+  });
+  assert.equal(result.invalidated, 1);
+  assert.deepEqual(result.rejectedKeys, [{ deviceId: 'macbook', client: 'unknown', sessionId: 'bad', reason: 'invalid_key' }]);
+});
+
 test('mergeRemoteCatalog folds remote entries into local state (host/offline read)', () => {
   const local = computeCatalogDelta({ entries: [entry({ updatedAt: '2026-08-10T01:00:00.000Z' })] });
   const remote = [
@@ -210,6 +276,27 @@ test('mergeRemoteCatalog folds remote entries into local state (host/offline rea
   assert.ok(nextState[entryKey(entry({ sessionId: 'from-other-device', deviceId: 'desktop' }))]);
   // The stale same-key entry did not regress the local state.
   assert.equal(nextState[entryKey(entry())].updatedAt, '2026-08-10T01:00:00.000Z');
+});
+
+test('mergeRemoteCatalog uses the hub tie rule: local beats fallback at the same time', () => {
+  // Stored fallback + remote local at the same timestamp → remote wins.
+  const local = computeCatalogDelta({ entries: [entry({ title: 'Fallback', titleSource: 'fallback', updatedAt: '2026-08-10T01:00:00.000Z' })] });
+  const promoted = mergeRemoteCatalog({
+    state: local.nextState,
+    entries: [entry({ title: 'Local', titleSource: 'local', updatedAt: '2026-08-10T01:00:00.000Z' })]
+  });
+  assert.equal(promoted.mergedEntries.length, 1);
+  assert.equal(promoted.mergedEntries[0].title, 'Local');
+  assert.equal(promoted.nextState[entryKey(entry())].titleSource, 'local');
+
+  // Stored local + remote fallback at the same timestamp → remote does NOT win.
+  const local2 = computeCatalogDelta({ entries: [entry({ title: 'Local', titleSource: 'local', updatedAt: '2026-08-10T01:00:00.000Z' })] });
+  const reverse = mergeRemoteCatalog({
+    state: local2.nextState,
+    entries: [entry({ title: 'Fallback', titleSource: 'fallback', updatedAt: '2026-08-10T01:00:00.000Z' })]
+  });
+  assert.equal(reverse.mergedEntries.length, 0);
+  assert.equal(reverse.nextState[entryKey(entry())].titleSource, 'local');
 });
 
 test('entryKey and keyOf round-trip and reject undefined parts', () => {

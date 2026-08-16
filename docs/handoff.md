@@ -5,19 +5,18 @@
 ## 最近一轮
 
 - 时间：2026-08-17
-- 已完成：**审查修复轮**——针对 docs/review.md 的 11 项问题（4 严重 + 5 一般 + 2 建议）逐项修复并验证：
-  - `0495d1d` 统一 whole-record 冲突 winner（含墓碑存留、workspace 元数据不再被 stale 覆盖）
-  - `ce46a0d` 同时间戳 fallback→local 晋升上传、rejected keys checkpoint、deletes 透传、agent 状态原子写
-  - `2966801` Catalog 视图读 Hub 永久目录（分页+认证+本地回退）、按完整主键去重
-  - `5cdb25b` 备份脚本 VACUUM INTO + quick_check、certbot bootstrap 流程、hub build registry 重注册
-- 上一轮（T1–T11 实现）：commit 序列见 `d139e9d..0af5213`，各任务验收与实现要点见 docs/archive/2026-08-17-session-catalog-tasks.md 对应的 handoff 历史（归档前内容）。
-- 验证方式：`npm run lint` 干净；`node --test` 3186 项中 3177 通过、7 跳过、1 失败（`macWidgetLaunchServicesRecovery` symlink 权限，Windows 上改动前即失败）；`update:hub-build` 已重跑；真实 Node hub E2E 验证墓碑存留 + 显式复活语义。
+- 已完成：**异源审查返工轮**——针对异源团队复盘的 docs/review.md 8 项问题（3 严重 + 5 一般）逐项修复并验证：
+  - 服务端隐私再清洗：Hub `upsertEntries` 统一走 `normalizeCatalogEntry`，新增 `sanitizeWorkspaceKey`/`sanitizeWorkspaceLabel` 丢弃/收编 path-shaped workspace 字段，upsert 不再接受 `deletedAt`（#1）。
+  - 墓碑一致性：`winnerExpr` 增删除时间守卫（#2）；`invalidateKeys` 改 `INSERT…ON CONFLICT` 对未知 key 也落墓碑（#3）；invalidate 携带客户端事件时间 `deletedAt` 做条件更新 + 幂等（#5）；客户端 `computeCatalogDelta` 在删除后条目重现时用 `monotonicAfter` 制造严格更新事件时间做显式复活（#4）。
+  - 一致性与响应：抽取 `remoteEntryWins` 统一 `mergeRemoteCatalog` 的 tie 规则（#6）；invalidate 返回 `rejectedKeys` 且客户端只 checkpoint 已接受删除（#7）；nginx SSE location 加 `limit_conn`（#8）。
+  - `scripts/hub-build-manifest.js` 的 `NODE_RUNTIME_SOURCE_FILES` 增补 `sessionCatalog.js`、`hashKey.js`，`update:hub-build` 已重跑。
+- 验证方式：`npm run lint` 干净；`npm test` 3197 项中 3189 通过、7 跳过、1 失败（`macWidgetLaunchServicesRecovery` symlink EPERM，Windows 上改动前即失败）；Catalog 专项测试 70/70（新增 11 项乱序时序测试）。
 - 已知问题 / 待办：
   - 部署到阿里云 ECS 的真实服务器验收（deploy/README.md 流程）尚未执行——需要真实服务器与 IP 证书。
   - 「两台设备错峰互看」真实设备验收未执行（无第二台设备）。
   - DSH zstd 解压在本机无后端时显示不可用（`zstdAvailable: false`）；装系统 zstd 或 fzstd 即可启用。
   - 本地 `main` 落后 `origin/main`（上游镜像待快进）；`personal` 尚未推送到 fork。
-- 给审查/下一轮的提示：本轮修复结论已写入 docs/review.md 的「修复记录」表，11 项全部闭环。如需再次异源复核，重点看修复是否引入新问题（墓碑复活语义、指纹增量、rejected checkpoint）。
+- 给审查/下一轮的提示：修复结论已写入 docs/review.md 的「修复记录」表，8 项全部闭环。如需再次异源复核，重点看墓碑复活语义（严格更新事件时间）、服务端路径清洗、invalidate 幂等与 rejected checkpoint。
 
 ## 个人化工作流
 

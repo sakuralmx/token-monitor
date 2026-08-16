@@ -70,6 +70,27 @@ function sanitizeLabel(value) {
   return sanitizeText(value, LABEL_MAX_CHARS);
 }
 
+// A workspace key is a stable one-way hash (see workspaceKeyFromPath), never a
+// path. Re-normalization must not let an absolute or relative path through, so
+// any key that still looks path-shaped after id sanitization is dropped. The
+// client derives keys as `sha256:` digests; the hub re-applies the same rule so
+// a broken/malicious client cannot persist a path.
+function sanitizeWorkspaceKey(value) {
+  const id = sanitizeId(value, WORKSPACE_KEY_MAX_CHARS);
+  if (!id || /[\\/]/.test(id)) return '';
+  return id;
+}
+
+// A workspace label is a display name, never a path. A path-shaped label is
+// reduced to its final segment (the same basename guarantee as
+// workspaceLabelFromPath) so no directory structure or home path can leak.
+function sanitizeWorkspaceLabel(value) {
+  const label = sanitizeLabel(value);
+  if (!label) return '';
+  const segments = label.split(/[\\/]+/).filter(Boolean);
+  return segments.length > 1 ? segments[segments.length - 1] : label;
+}
+
 // Stable, privacy-safe workspace identity (plan T4 / docs API.md).
 //
 // workspaceKey: one-way hash of the *normalized absolute path*. The hash hides
@@ -144,8 +165,8 @@ function normalizeCatalogEntry(raw) {
     deviceId,
     client,
     sessionId,
-    workspaceKey: sanitizeId(raw.workspaceKey, WORKSPACE_KEY_MAX_CHARS),
-    workspaceLabel: sanitizeLabel(raw.workspaceLabel),
+    workspaceKey: sanitizeWorkspaceKey(raw.workspaceKey),
+    workspaceLabel: sanitizeWorkspaceLabel(raw.workspaceLabel),
     title: sanitizeTitle(raw.title),
     titleSource: TITLE_SOURCES.includes(raw.titleSource) ? raw.titleSource : '',
     lastUsedAt: validIsoTimestamp(raw.lastUsedAt) || validIsoTimestamp(raw.startedAt),
@@ -218,6 +239,8 @@ module.exports = {
   sanitizeLabel,
   sanitizeText,
   sanitizeTitle,
+  sanitizeWorkspaceKey,
+  sanitizeWorkspaceLabel,
   titleFromFirstUserMessage,
   workspaceKeyFromPath,
   workspaceLabelFromPath

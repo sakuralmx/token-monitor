@@ -78,6 +78,29 @@
 - 当前 focused tests 44/44 全过，但未覆盖上述乱序时序：删除时间晚于 stale-upsert 内容时间、unknown-key delete-before-upsert、delete-after-resurrection、同时间 local/fallback 远端合并、客户端相同元数据显式复活。
 - 本轮为审查，不修改代码；阿里云真实部署、两台设备错峰互看仍需真实环境验收。
 
+## 修复记录（2026-08-17 返工）
+
+全部 8 项已闭环，按问题编号逐条：
+
+| # | 级别 | 修复 |
+|---|---|---|
+| 1 | 严重 | Hub 入库前统一调用 `normalizeCatalogEntry`（`catalogStore.js` 的 `upsertEntries`），不再信任客户端已清洗；并新增服务端路径形态校验——`sessionCatalog.js` 的 `sanitizeWorkspaceKey` 丢弃含 `/\` 的 path-shaped `workspaceKey`、`sanitizeWorkspaceLabel` 把 path-shaped `workspaceLabel` 收成 basename。`normalizedToRow` 显式忽略 upsert 传入的 `deletedAt`。回归测试：`hub re-sanitizes path-shaped workspace fields and control chars`、`upsert ignores deletedAt`、`normalizeCatalogEntry sanitizes path-shaped workspace fields`。 |
+| 2 | 严重 | 墓碑冲突 winner 增加删除时间守卫：`winnerExpr` 追加 `AND (deleted_at IS NULL OR excluded.updated_at > deleted_at)`，禁止 `incoming.updated_at <= deleted_at` 的 upsert 清除墓碑。测试改为显式 `deletedAt` 并断言「内容时间介于原记录与删除时间之间」的旧副本不复活。 |
+| 3 | 严重 | `invalidateKeys` 改为 `INSERT … ON CONFLICT DO UPDATE`，对未知 key 也落墓碑（`title=''` 的墓碑行），delete-before-upsert 竞态不再复活。测试：`invalidating an unknown key stores a tombstone…`。 |
+| 4 | 一般 | 显式复活统一到「严格更新事件时间」协议：客户端 `computeCatalogDelta` 在 `previous.deletedAt` 存在且条目重现时，用 `monotonicAfter(deletedAt)` 生成严格更新的 `updatedAt` 上传；Hub winner 用同一规则（#2 的守卫）接受。文档 `API.md` 同步。测试：`an entry that reappears after an explicit delete is resurrected with a newer event time`。 |
+| 5 | 一般 | invalidate 携带客户端事件时间 `deletedAt` 并做条件更新：live 行 `eventTime >= updated_at` 才落墓碑、已删除行 `eventTime > deleted_at` 才刷新；幂等重复与延迟旧删除均为 no-op。测试：`repeating the same delete is a no-op`、`a delayed retry of an older delete cannot clobber a newer resurrection`。 |
+| 6 | 一般 | 抽取统一比较器 `remoteEntryWins`（镜像 Hub `winnerExpr`，含 tie 时 local 胜 fallback 与墓碑守卫），`mergeRemoteCatalog` 改用它；补 local/fallback 双向同时间合并测试。 |
+| 7 | 一般 | `invalidateKeys` 返回 `rejected` + `rejectedKeys`（`reason: 'invalid_key'`）；`uploadCatalogDelta` 收集 invalidate 的 rejectedKeys，`runCatalogSync` 经 `checkpointAccepted` 只 checkpoint 已接受的删除。测试：`invalidate reports malformed keys`、`uploadCatalogDelta surfaces invalidate-rejected keys`。文档 `API.md` 同步响应示例。 |
+| 8 | 一般 | nginx 增加 `limit_conn_zone hub_stream`，SSE exact-match location 加 `limit_conn hub_stream 10`，单 IP 限 10 条长连接，多设备 NAT 不误伤。 |
+
+补的乱序/恶意载荷回归测试共 11 个，集中在 `tests/shared/catalogStore.test.js`（服务端）、`tests/shared/catalogSync.test.js` / `catalogSyncRuntime.test.js`（客户端）、`tests/shared/sessionCatalog.test.js`（共享清洗）。
+
+`scripts/hub-build-manifest.js` 的 `NODE_RUNTIME_SOURCE_FILES` 增补 `sessionCatalog.js`、`hashKey.js`（catalogStore 的新传递依赖），`npm run update:hub-build` 已重跑。
+
 ## 结论
 
-**不放行，需返工。** 当前有 3 项严重问题，均涉及永久目录的核心隐私或墓碑一致性契约；应先统一事件版本/删除/复活语义与 Hub 服务端隐私校验，再修复客户端 checkpoint 和文档响应，补齐乱序与恶意载荷回归测试后重新异源复核。
+**已返工并闭环。** 3 项严重问题（服务端隐私再清洗、墓碑删除时间守卫、未知 key 墓碑）与 5 项一般问题全部修复，客户端/服务端/文档三方使用同一事件时间与冲突规则，并补齐乱序与恶意载荷回归测试。
+
+- `npm run lint` 干净；`npm test` 3197 项中 3189 通过、7 跳过、1 失败（`macWidgetLaunchServicesRecovery` Windows symlink EPERM，改动前即存在的环境性失败）。
+- Catalog 专项测试 70/70 通过（含新增 11 项乱序时序测试）。
+- 仍待真实环境验收：阿里云 ECS 部署、两台设备错峰互看。

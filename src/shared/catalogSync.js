@@ -38,6 +38,17 @@ function isoOf(value) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+// A strictly-later ISO timestamp than `reference`, for manufacturing a
+// resurrection event time the hub's tombstone guard will accept. Uses the wall
+// clock, and only falls back to reference+1ms when the clock is behind or equal,
+// so the resurrection always beats the delete it is undoing.
+function monotonicAfter(reference) {
+  const base = Date.parse(String(reference || ''));
+  const now = Date.now();
+  const ms = Number.isFinite(base) ? Math.max(now, base + 1) : now;
+  return new Date(ms).toISOString();
+}
+
 // Fingerprint of the conflict-relevant content: the title plus its source. The
 // hub's tie-break rule lets a `local` title upgrade a `fallback` title at the
 // same updatedAt, so a state that only records updatedAt would never upload that
@@ -69,11 +80,17 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
     const isSameTimeChange = !isNew && !isNewer
       && updatedAt === previous.updatedAt
       && (contentFingerprint(entry) !== `${previous.titleSource || 'fallback'}\u0000${previous.title || ''}`);
-    if (isNew || isNewer || isSameTimeChange) {
-      upserts.push(entry);
+    // Explicit resurrection: the client previously soft-deleted this entry and it
+    // has now reappeared with no newer content time. Upload it with a strictly
+    // newer event time so the hub accepts the resurrection instead of treating it
+    // as a stale replay of the delete (which its tombstone guard would refuse).
+    const isResurrection = !isNew && !isNewer && !isSameTimeChange && Boolean(previous?.deletedAt);
+    const effectiveUpdatedAt = isResurrection ? monotonicAfter(previous.deletedAt) : updatedAt;
+    if (isNew || isNewer || isSameTimeChange || isResurrection) {
+      upserts.push(isResurrection ? { ...entry, updatedAt: effectiveUpdatedAt } : entry);
     }
     nextState[key] = {
-      updatedAt: updatedAt || previous?.updatedAt || '',
+      updatedAt: effectiveUpdatedAt || previous?.updatedAt || '',
       titleSource: entry.titleSource || 'fallback',
       title: entry.title || ''
     };
@@ -83,10 +100,14 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
   for (const key of deletes || []) {
     const normalized = keyOf(key);
     if (!normalized || normalized.includes('|undefined')) continue;
-    invalidateKeys.push(key);
-    // Tombstone the local state so a later empty scan does not resurrect it.
+    // A delete carries a stable event time: reuse the caller's, else the state's
+    // prior tombstone time, else the wall clock — so an idempotent retry sends the
+    // SAME event time and the hub treats the repeat as a no-op.
     const prior = nextState[normalized];
-    nextState[normalized] = { ...prior, updatedAt: prior?.updatedAt || '', deletedAt: new Date().toISOString() };
+    const eventTime = isoOf(key.deletedAt) || prior?.deletedAt || new Date().toISOString();
+    invalidateKeys.push({ ...key, deletedAt: eventTime });
+    // Tombstone the local state so a later empty scan does not resurrect it.
+    nextState[normalized] = { ...prior, updatedAt: prior?.updatedAt || '', deletedAt: eventTime };
   }
 
   return { upserts, invalidateKeys, nextState };
@@ -176,6 +197,13 @@ async function uploadCatalogDelta({ upserts = [], invalidateKeys = [], fetchFn, 
     }
     const payload = await response.json();
     invalidated += Number(payload.invalidated || 0);
+    if (Array.isArray(payload.rejectedKeys)) {
+      rejectedKeys.push(...payload.rejectedKeys);
+    } else if (Number(payload.rejected || 0) > 0) {
+      // Older hub that only reports a rejected count: conservatively mark every
+      // key in this batch as rejected so none of them are checkpointed.
+      rejectedKeys.push(...batch.map((key) => ({ deviceId: key.deviceId, client: key.client, sessionId: key.sessionId })));
+    }
   }
 
   return { accepted, invalidated, rejectedKeys, unavailable: false, catalogVersion: 1 };
@@ -227,6 +255,25 @@ async function fetchHubCatalogEntries({ fetchFn, baseUrl = '', secret = '', logg
   return { entries: collected, source: 'hub' };
 }
 
+// Unified whole-record conflict comparator shared by the client merge path; it
+// mirrors the hub store's SQL winner expression (catalogStore.js `winnerExpr`):
+//   - no local baseline → remote wins
+//   - remote strictly newer → wins
+//   - remote tie + `local` title over a stored `fallback` → wins
+//   - a tombstoned local entry is only replaced by a strictly newer remote time
+function remoteEntryWins(remote, local) {
+  if (!local || !local.updatedAt) return true;
+  const remoteUpdated = remote.updatedAt || '';
+  const localUpdated = local.updatedAt || '';
+  const remoteSource = remote.titleSource === 'local' ? 'local' : 'fallback';
+  const localSource = local.titleSource === 'local' ? 'local' : 'fallback';
+  const contentWin = remoteUpdated > localUpdated
+    || (remoteUpdated === localUpdated && remoteSource === 'local' && localSource !== 'local');
+  if (!contentWin) return false;
+  if (local.deletedAt && !(remoteUpdated > local.deletedAt)) return false;
+  return true;
+}
+
 // Merge a remote catalog read into the local sync state without uploading:
 // remote entries newer than the local state win locally (used by host-mode
 // widgets / offline reads). Returns { mergedEntries, nextState }.
@@ -238,7 +285,17 @@ function mergeRemoteCatalog({ state = {}, entries = [] } = {}) {
     const key = entryKey(entry);
     const previous = state[key];
     const updatedAt = isoOf(entry.updatedAt) || isoOf(entry.lastUsedAt) || '';
-    if (!previous || !previous.updatedAt || (updatedAt && updatedAt >= previous.updatedAt)) {
+    const remoteDeletedAt = isoOf(entry.deletedAt);
+    if (remoteDeletedAt) {
+      // A remote tombstone must tombstone the local state (never merge as live),
+      // but only when it is strictly newer than any delete the client already knows.
+      const prior = nextState[key];
+      if (!prior?.deletedAt || remoteDeletedAt > prior.deletedAt) {
+        nextState[key] = { ...prior, updatedAt: prior?.updatedAt || '', deletedAt: remoteDeletedAt };
+      }
+      continue;
+    }
+    if (remoteEntryWins({ updatedAt, titleSource: entry.titleSource }, previous)) {
       merged.push(entry);
       nextState[key] = {
         updatedAt: updatedAt || previous?.updatedAt || '',

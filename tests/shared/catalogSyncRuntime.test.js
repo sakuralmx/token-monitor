@@ -143,7 +143,11 @@ test('an adapter returning explicit deletes forwards them to the hub', async () 
     }
   });
   assert.equal(report.invalidated, 1);
-  assert.deepEqual(invalidateBody.keys, [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1' }]);
+  assert.equal(invalidateBody.keys.length, 1);
+  assert.equal(invalidateBody.keys[0].deviceId, 'macbook');
+  assert.equal(invalidateBody.keys[0].client, 'codex');
+  assert.equal(invalidateBody.keys[0].sessionId, 'rollout-1');
+  assert.ok(invalidateBody.keys[0].deletedAt); // carries a client event time
 });
 
 test('device-scoped state helpers round-trip', () => {

@@ -18,6 +18,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { normalizeCatalogEntry } = require('./sessionCatalog');
+
 const CATALOG_SCHEMA_VERSION = 1;
 
 let sqlite = null;
@@ -28,11 +30,6 @@ const MAX_BATCH_ENTRIES = 1000;
 const MAX_BATCH_KEYS = 500;
 const MAX_PAGE_SIZE = 500;
 const DEFAULT_PAGE_SIZE = 200;
-
-function num(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
 
 function cleanText(value, maxChars = 200) {
   const text = String(value || '').normalize('NFC').replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/gu, ' ').trim();
@@ -58,25 +55,27 @@ function cursorDecode(raw) {
   }
 }
 
-// The wire shape is a closed field list (docs/API.md "The unified entry");
-// rowToEntry maps snake_case SQL columns back to it explicitly.
-
-function entryToRow(entry) {
+// The hub re-normalizes every entry through the shared client whitelist
+// (normalizeCatalogEntry) so a broken/malicious client cannot bypass the privacy
+// sanitization. normalizedToRow then maps the closed wire shape to snake_case
+// SQL columns; deletes are NOT settable here — tombstones come only from
+// invalidateKeys, so an upsert can never carry its own deletedAt.
+function normalizedToRow(normalized) {
   return {
-    deviceId: cleanText(entry.deviceId, 100),
-    client: entry.client,
-    sessionId: cleanText(entry.sessionId, 200),
-    workspaceKey: cleanText(entry.workspaceKey, 120),
-    workspaceLabel: cleanText(entry.workspaceLabel, 120),
-    title: cleanText(entry.title, 200),
-    titleSource: entry.titleSource === 'local' ? 'local' : 'fallback',
-    startedAt: isoOf(entry.startedAt),
-    lastUsedAt: isoOf(entry.lastUsedAt),
-    messageCount: Number.isInteger(num(entry.messageCount)) ? Math.max(0, Math.round(num(entry.messageCount))) : 0,
-    totalTokens: Math.max(0, Math.round(num(entry.stats?.totalTokens ?? 0))),
-    costUsd: Math.max(0, num(entry.stats?.costUsd ?? 0)),
-    updatedAt: isoOf(entry.updatedAt) || isoOf(entry.lastUsedAt) || new Date().toISOString(),
-    deletedAt: isoOf(entry.deletedAt)
+    deviceId: normalized.deviceId,
+    client: normalized.client,
+    sessionId: normalized.sessionId,
+    workspaceKey: normalized.workspaceKey,
+    workspaceLabel: normalized.workspaceLabel,
+    title: normalized.title,
+    titleSource: normalized.titleSource === 'local' ? 'local' : 'fallback',
+    startedAt: normalized.startedAt || null,
+    lastUsedAt: normalized.lastUsedAt,
+    messageCount: Number.isInteger(normalized.messageCount) ? normalized.messageCount : 0,
+    totalTokens: Math.max(0, Math.round(normalized.stats?.totalTokens ?? 0)),
+    costUsd: Math.max(0, normalized.stats?.costUsd ?? 0),
+    updatedAt: normalized.updatedAt || normalized.lastUsedAt,
+    deletedAt: null
   };
 }
 
@@ -167,16 +166,22 @@ function createCatalogStore({ file, logger = console } = {}) {
   // soft-delete tombstone — follows the same conflict rule as the title: the
   // incoming row wins when its updated_at is strictly newer, or when it ties on
   // updated_at and is a `local` titleSource upgrading an existing `fallback`.
-  // A stale re-upload therefore cannot resurrect a deleted session (the deleted_at
-  // tombstone stays put unless the winner itself clears it), and a stale
-  // workspace label cannot overwrite a newer one. Explicit resurrection remains
-  // possible, but only from a row that actually wins the conflict.
+  // A tombstone additionally refuses any incoming row whose updated_at is not
+  // strictly newer than deleted_at, so a stale re-upload (or an out-of-order
+  // replay of an old copy) can never clear a delete. Explicit resurrection
+  // remains possible, but only from a row that is strictly newer than the delete.
   const winnerExpr = `(
-    excluded.updated_at > catalog_entries.updated_at
-    OR (
-      excluded.updated_at = catalog_entries.updated_at
-      AND excluded.title_source = 'local'
-      AND catalog_entries.title_source != 'local'
+    (
+      excluded.updated_at > catalog_entries.updated_at
+      OR (
+        excluded.updated_at = catalog_entries.updated_at
+        AND excluded.title_source = 'local'
+        AND catalog_entries.title_source != 'local'
+      )
+    )
+    AND (
+      catalog_entries.deleted_at IS NULL
+      OR excluded.updated_at > catalog_entries.deleted_at
     )
   )`;
   const upsertStmt = db.prepare(`
@@ -199,16 +204,11 @@ function createCatalogStore({ file, logger = console } = {}) {
       deleted_at      = CASE WHEN ${winnerExpr} THEN excluded.deleted_at ELSE catalog_entries.deleted_at END
   `);
 
-  // Per-key normalization gate (client enum + required identity) mirrors the
-  // client-side whitelist; the hub is the final trust boundary.
-  function isValidKey(entry) {
-    return entry
-      && typeof entry.deviceId === 'string' && entry.deviceId.trim()
-      && VALID_CLIENTS.has(String(entry.client || '').toLowerCase())
-      && typeof entry.sessionId === 'string' && entry.sessionId.trim()
-      && entry.title;
-  }
-
+  // Per-key normalization gate: the shared client whitelist (normalizeCatalogEntry)
+  // is the final trust boundary on the hub. It enforces the closed client enum,
+  // required identity/title/lastUsedAt, control-char/length sanitization, and
+  // path-shape safety for workspace fields — a broken/malicious client cannot
+  // bypass it.
   function upsertEntries(entries) {
     if (!Array.isArray(entries)) {
       const error = new Error('entries must be an array');
@@ -226,8 +226,8 @@ function createCatalogStore({ file, logger = console } = {}) {
     db.exec('BEGIN');
     try {
       for (const raw of entries) {
-        const entry = { ...raw, client: String(raw?.client || '').toLowerCase() };
-        if (!isValidKey(entry)) {
+        const normalized = normalizeCatalogEntry(raw);
+        if (!normalized) {
           rejected += 1;
           rejectedKeys.push({
             deviceId: String(raw?.deviceId || '').trim(),
@@ -237,7 +237,7 @@ function createCatalogStore({ file, logger = console } = {}) {
           });
           continue;
         }
-        const row = entryToRow(entry);
+        const row = normalizedToRow(normalized);
         upsertStmt.run(
           row.deviceId, row.client, row.sessionId, row.workspaceKey, row.workspaceLabel,
           row.title, row.titleSource, row.startedAt, row.lastUsedAt, row.messageCount,
@@ -340,21 +340,56 @@ function createCatalogStore({ file, logger = console } = {}) {
       throw error;
     }
     const now = new Date().toISOString();
-    // Set deleted_at only; keep updated_at at the entry's last content time so a
-    // client's explicit resurrection (a re-upload with a newer content time) can
-    // still win the whole-record conflict. Bumping updated_at here would make the
-    // tombstone newer than every historical re-upload, silently blocking the
-    // documented "re-upload without deletedAt resurrects it" behaviour.
+    // Tombstone with event-time ordering. A delete carries the client's event
+    // time (`deletedAt`, defaulting to server now) so an out-of-order retry of an
+    // older delete cannot clobber a newer resurrection, and an idempotent repeat
+    // is a no-op. The INSERT/ON CONFLICT clause creates a tombstone for an
+    // unknown key (delete-before-upsert ordering) and only refreshes an existing
+    // row when the incoming event time is strictly newer than the current state:
+    //   - alive row:   tombstone iff eventTime >= updated_at (delete not stale)
+    //   - deleted row: refresh iff eventTime > deleted_at (repeats are no-ops)
+    // `updated_at` is deliberately NOT bumped for a known row, so the entry keeps
+    // its last content time and the tombstone's own time lives in deleted_at; the
+    // upsert winner reads that deleted_at to reject stale re-uploads.
     const tombstoneStmt = db.prepare(`
-      UPDATE catalog_entries SET deleted_at = ?
-      WHERE device_id = ? AND client = ? AND session_id = ?
+      INSERT INTO catalog_entries
+        (device_id, client, session_id, workspace_key, workspace_label, title,
+         title_source, started_at, last_used_at, message_count, total_tokens,
+         cost_usd, updated_at, deleted_at)
+      VALUES (?, ?, ?, '', '', '', 'fallback', NULL, ?, 0, 0, 0, ?, ?)
+      ON CONFLICT(device_id, client, session_id) DO UPDATE SET
+        deleted_at = excluded.deleted_at
+      WHERE (
+        (catalog_entries.deleted_at IS NULL AND catalog_entries.updated_at <= excluded.deleted_at)
+        OR
+        (catalog_entries.deleted_at IS NOT NULL AND catalog_entries.deleted_at < excluded.deleted_at)
+      )
     `);
     let invalidated = 0;
+    let rejected = 0;
+    const rejectedKeys = [];
     db.exec('BEGIN');
     try {
       for (const key of keys || []) {
-        if (!key || !key.deviceId || !key.sessionId || !VALID_CLIENTS.has(String(key.client || '').toLowerCase())) continue;
-        const result = tombstoneStmt.run(now, cleanText(key.deviceId, 100), String(key.client).toLowerCase(), cleanText(key.sessionId, 200));
+        if (!key || !key.deviceId || !key.sessionId || !VALID_CLIENTS.has(String(key.client || '').toLowerCase())) {
+          rejected += 1;
+          rejectedKeys.push({
+            deviceId: String(key?.deviceId || '').trim(),
+            client: String(key?.client || '').toLowerCase(),
+            sessionId: String(key?.sessionId || '').trim(),
+            reason: 'invalid_key'
+          });
+          continue;
+        }
+        const eventTime = isoOf(key.deletedAt) || now;
+        const result = tombstoneStmt.run(
+          cleanText(key.deviceId, 100),
+          String(key.client).toLowerCase(),
+          cleanText(key.sessionId, 200),
+          eventTime,
+          eventTime,
+          eventTime
+        );
         invalidated += result.changes;
       }
       db.exec('COMMIT');
@@ -362,7 +397,7 @@ function createCatalogStore({ file, logger = console } = {}) {
       db.exec('ROLLBACK');
       throw error;
     }
-    return { invalidated };
+    return { invalidated, rejected, rejectedKeys };
   }
 
   function backup(destPath) {

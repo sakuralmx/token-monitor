@@ -36,7 +36,9 @@ const NODE_RUNTIME_SOURCE_FILES = Object.freeze([
   'src/hub/server.js',
   'src/shared/http.js',
   'src/shared/config.js',
-  'src/shared/catalogStore.js'
+  'src/shared/catalogStore.js',
+  'src/shared/sessionCatalog.js',
+  'src/shared/hashKey.js'
 ]);
 const WORKER_RUNTIME_SOURCE_FILES = Object.freeze([
   'worker/src/index.js',

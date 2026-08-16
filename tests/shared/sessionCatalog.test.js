@@ -149,6 +149,15 @@ test('workspace label is the sanitized basename, never the full path', () => {
   assert.equal(workspaceLabelFromPath('C:\\Users\\alice\\projects\\bad\u0000name', { platform: 'win32' }), 'bad name');
 });
 
+test('normalizeCatalogEntry sanitizes path-shaped workspace fields (server-side trust boundary)', () => {
+  const entry = normalizeCatalogEntry(validRaw({
+    workspaceKey: 'C:\\Users\\alice\\projects\\secret-project',
+    workspaceLabel: '/Users/alice/projects/secret-project'
+  }));
+  assert.equal(entry.workspaceKey, ''); // path-shaped key dropped, never stored
+  assert.equal(entry.workspaceLabel, 'secret-project'); // reduced to the basename
+});
+
 test('buildCatalogEntry derives workspace fields from an absolute path', () => {
   const entry = buildCatalogEntry({
     deviceId,

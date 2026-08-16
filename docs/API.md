@@ -473,7 +473,7 @@ Every catalog route carries the same normalized entry shape (primary key: `devic
 | `messageCount` | Optional non-negative integer. |
 | `stats` | Optional bounded usage summary (`totalTokens`, `costUsd`). |
 | `updatedAt` | The **local adapter's** last-change timestamp; drives conflict resolution (T9). |
-| `deletedAt` | Soft-delete marker; `null` while active, an ISO timestamp once invalidated. Tombstones are permanent — a deleted entry never reappears without an explicit re-upload. |
+| `deletedAt` | Soft-delete marker; `null` while active, an ISO timestamp once invalidated. Tombstones are permanent — a deleted entry never reappears from a stale re-upload; it can only be resurrected by an upsert whose `updatedAt` is strictly newer than the delete. |
 
 ### `POST /api/catalog/v1/upsert`
 
@@ -507,10 +507,10 @@ Rules:
 
 - Body limit is the same 1 MiB as `POST /api/ingest`; larger bodies return `413 payload_too_large`.
 - Each batch is limited to **1000 entries**; larger batches return `413 batch_too_large` (or `400` on older hubs).
-- Entries are normalized per entry: unknown fields are dropped, malformed entries are rejected **individually** (counted in `rejected`) rather than failing the batch, and an invalid `client` / `sessionId` / `deviceId` rejects that entry.
+- Entries are re-normalized on the hub with the same whitelist the client applies: unknown fields are dropped, malformed entries are rejected **individually** (counted in `rejected`), an invalid `client` / `sessionId` / `deviceId` / `title` / `lastUsedAt` rejects that entry, and path-shaped `workspaceKey` / `workspaceLabel` values are sanitized so an absolute path or username can never be stored. The hub never trusts a client's own sanitization.
 - Upsert is a whole-record replace for the primary key — an entry that omits `workspaceKey` clears a previously stored one.
 - Conflict resolution (per primary key): the entry with the **greater `updatedAt`** wins; on a tie, `titleSource: "local"` beats `"fallback"`. A device that sends stale data cannot overwrite a newer title.
-- `deletedAt` entries are stored as tombstones; re-uploading the same key **without** `deletedAt` resurrects it.
+- Deletes are **not** settable via upsert (any incoming `deletedAt` is ignored); tombstones are created only by `POST /api/catalog/v1/invalidate`. A tombstoned entry is resurrected only by an upsert whose `updatedAt` is **strictly newer** than the tombstone's `deletedAt` — a stale or out-of-order re-upload of an old copy can never clear a delete.
 
 ### `GET /api/catalog/v1/sessions`
 
@@ -549,7 +549,7 @@ Soft-delete (tombstone) a set of entries by primary key.
 ```json
 {
   "keys": [
-    { "deviceId": "macbook", "client": "codex", "sessionId": "s1" }
+    { "deviceId": "macbook", "client": "codex", "sessionId": "s1", "deletedAt": "2026-08-17T03:00:00.000Z" }
   ]
 }
 ```
@@ -560,13 +560,20 @@ Response `200`:
 {
   "ok": true,
   "catalogVersion": 1,
-  "invalidated": 1
+  "invalidated": 1,
+  "rejected": 0,
+  "rejectedKeys": []
 }
 ```
 
-- `keys` is required and must be an array (≤ 500 per request); malformed keys are counted but not invalidated.
-- Invalidating a key that does not exist stores nothing and still reports success (idempotent).
-- The tombstone's `deletedAt` is the hub's write time; `updatedAt` is bumped so `since`-based readers converge.
+- `keys` is required and must be an array (≤ 500 per request).
+- Each key may carry `deletedAt`, the **client's** delete event time. It orders the delete against content updates and resurrections on the same client clock. When omitted the hub uses its own write time.
+- Malformed keys (invalid `client` / empty `sessionId` / `deviceId`) are **not** invalidated; they are reported in `rejected` and `rejectedKeys` so a client does not checkpoint a delete the hub never applied.
+- The tombstone is applied with event-time ordering:
+  - a live entry is tombstoned iff the delete event time is **not older** than the entry's current `updatedAt`;
+  - an already-tombstoned entry is only refreshed by a **strictly newer** event time, so an idempotent repeat or a delayed retry of an older delete is a no-op and does not refresh `deletedAt`.
+- Invalidating a key that does not exist **stores a tombstone** for that key (delete-before-upsert ordering), so a delayed upsert of the same key cannot resurrect a record the client has already deleted unless its `updatedAt` is strictly newer than the delete.
+- The tombstone's `deletedAt` is the delete event time; `updatedAt` is left at the entry's last content time (or set to the delete time for a previously unknown key) so `since`-based readers observe the delete via `deletedAt`.
 
 ### Error codes
 
