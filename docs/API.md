@@ -411,3 +411,177 @@ Because `updatedAt` doubles as the concurrency token, it is guaranteed to increa
 Records are re-normalized on ingest exactly as `POST /api/ingest` normalizes device records; unknown fields are dropped and malformed records are discarded rather than stored. `currency` is validated against the display currencies the app carries rates for (`USD`, `TWD`, `HKD`, `CNY`); a record naming anything else responds `400` and stores nothing, because coercing it would report an amount the user never entered. A successful write responds `200` with the stored document in the same shape as `GET`.
 
 An accepted write also broadcasts stats to connected stream clients with `reason: "subscriptions"`, the same way an ingest does. That frame carries the new `subscriptionsUpdatedAt`, which is how the other devices learn their copy has been overtaken.
+
+---
+
+## Session catalog (versioned metadata sync)
+
+The session catalog is a second, optional data plane on the hub: a **permanent, searchable directory of session metadata** (workspace + title + activity) that survives device offline periods, reinstallations, and local log rotation. It is deliberately **not** part of the device record: it lives in its own SQLite store (Node hub only) and is versioned independently of the device-line protocol above.
+
+### Scope and privacy contract
+
+Only safe, normalized session metadata crosses the wire. The following never appear in any catalog payload or in the hub store: raw conversation bodies, prompt/response text, credentials, the local username, and absolute filesystem paths. Workspaces are synced as a **stable key + display label** (see below), titles are generated locally with truncation and sanitization, and the catalog is purely additive to the existing ingest contract — a hub that does not implement it is unaffected.
+
+### Versioning
+
+The catalog protocol has its own version, independent of `hubBuild.schemaVersion`. The Node hub's `GET /api/health` response includes:
+
+```json
+{
+  "ok": true,
+  "role": "hub",
+  "runtime": "node-hub",
+  "catalogVersion": 1
+}
+```
+
+- `catalogVersion` present (`>= 1`): the hub implements the catalog routes below.
+- `catalogVersion` absent (including every Cloudflare Worker build): catalog routes return `404 catalog_unavailable`; clients must treat the catalog as unsupported and skip catalog sync entirely rather than retrying.
+- The wire shape is frozen per version; incompatible changes bump `catalogVersion` and keep the old routes available for a transition window.
+
+### The unified entry
+
+Every catalog route carries the same normalized entry shape (primary key: `deviceId + client + sessionId`):
+
+```json
+{
+  "deviceId": "macbook",
+  "client": "cherrystudio",
+  "sessionId": "session-2026-08-17T00-00-00-abc",
+  "workspaceKey": "sha256:opaque-workspace-identifier",
+  "workspaceLabel": "token-monitor",
+  "title": "Fix the flaky test",
+  "titleSource": "local",
+  "startedAt": "2026-08-17T00:00:00.000Z",
+  "lastUsedAt": "2026-08-17T01:00:00.000Z",
+  "messageCount": 12,
+  "stats": { "totalTokens": 1234, "costUsd": 0.01 },
+  "updatedAt": "2026-08-17T01:00:00.000Z",
+  "deletedAt": null
+}
+```
+
+| Field | Rule |
+|---|---|
+| `client` | Closed enum: `cherrystudio`, `codex`, `dsh`. Unknown ids are rejected per entry. |
+| `sessionId` | Stable session identifier, ≤ 200 chars, no control chars. The same session must keep the same id across reboots and resyncs. |
+| `workspaceKey` | **Never a path.** A stable hash / canonicalized project key (e.g. `sha256:` digest) that does not change for the same project across reboots, and contains no user info. Optional — `""` for sessions with no workspace. |
+| `workspaceLabel` | Sanitized display name for the workspace (≤ 120 chars, control chars stripped, whitespace collapsed). May differ between devices but should be stable per device. |
+| `title` | Local title, truncated to 200 chars and sanitized (whitespace collapsed, control chars stripped, unpaired surrogates removed). Never raw conversation text — see `titleSource`. |
+| `titleSource` | `"local"` (the client's own title) or `"fallback"` (derived locally from the first valid user message). `"fallback"` titles may be rewritten by a later `"local"` write. |
+| `startedAt` / `lastUsedAt` | ISO-8601 UTC timestamps; `lastUsedAt` is the sort key. |
+| `messageCount` | Optional non-negative integer. |
+| `stats` | Optional bounded usage summary (`totalTokens`, `costUsd`). |
+| `updatedAt` | The **local adapter's** last-change timestamp; drives conflict resolution (T9). |
+| `deletedAt` | Soft-delete marker; `null` while active, an ISO timestamp once invalidated. Tombstones are permanent — a deleted entry never reappears without an explicit re-upload. |
+
+### `POST /api/catalog/v1/upsert`
+
+Batch upsert of catalog entries (add or update). Idempotent per primary key.
+
+```http
+Authorization: Bearer <secret>
+Content-Type: application/json
+```
+
+```json
+{
+  "entries": [
+    { "deviceId": "macbook", "client": "codex", "sessionId": "s1", "workspaceKey": "sha256:…", "workspaceLabel": "token-monitor", "title": "…", "titleSource": "local", "lastUsedAt": "…", "updatedAt": "…" }
+  ]
+}
+```
+
+Response `200`:
+
+```json
+{
+  "ok": true,
+  "catalogVersion": 1,
+  "accepted": 1,
+  "rejected": 0
+}
+```
+
+Rules:
+
+- Body limit is the same 1 MiB as `POST /api/ingest`; larger bodies return `413 payload_too_large`.
+- Each batch is limited to **1000 entries**; larger batches return `413 batch_too_large` (or `400` on older hubs).
+- Entries are normalized per entry: unknown fields are dropped, malformed entries are rejected **individually** (counted in `rejected`) rather than failing the batch, and an invalid `client` / `sessionId` / `deviceId` rejects that entry.
+- Upsert is a whole-record replace for the primary key — an entry that omits `workspaceKey` clears a previously stored one.
+- Conflict resolution (per primary key): the entry with the **greater `updatedAt`** wins; on a tie, `titleSource: "local"` beats `"fallback"`. A device that sends stale data cannot overwrite a newer title.
+- `deletedAt` entries are stored as tombstones; re-uploading the same key **without** `deletedAt` resurrects it.
+
+### `GET /api/catalog/v1/sessions`
+
+Incremental read with cursor pagination. Returns entries newer than `since`, optionally filtered, newest-`lastUsedAt`-first within the device.
+
+| Query param | Meaning |
+|---|---|
+| `deviceId` | Optional filter (default: all devices). |
+| `client` | Optional filter. |
+| `workspace` | Optional filter by exact `workspaceKey`. |
+| `since` | Optional ISO timestamp; only entries with `updatedAt > since` are returned (incremental). |
+| `includeDeleted` | `1` to include tombstones; default excludes them. |
+| `limit` | Page size, 1–500, default 200. |
+| `cursor` | Opaque pagination token from a previous response's `nextCursor`. |
+
+Response `200`:
+
+```json
+{
+  "ok": true,
+  "catalogVersion": 1,
+  "entries": [ /* normalized entries */ ],
+  "nextCursor": "opaque-cursor-string",
+  "hasMore": true
+}
+```
+
+- Omit `cursor` for the first page; pass back `nextCursor` verbatim for the next.
+- `nextCursor` is opaque and may encode the last seen `(updatedAt, deviceId, client, sessionId)`; clients must not parse it.
+- With `since`, the cursor still works: the same page key is used, so a client can resume after an interrupted incremental read.
+
+### `POST /api/catalog/v1/invalidate`
+
+Soft-delete (tombstone) a set of entries by primary key.
+
+```json
+{
+  "keys": [
+    { "deviceId": "macbook", "client": "codex", "sessionId": "s1" }
+  ]
+}
+```
+
+Response `200`:
+
+```json
+{
+  "ok": true,
+  "catalogVersion": 1,
+  "invalidated": 1
+}
+```
+
+- `keys` is required and must be an array (≤ 500 per request); malformed keys are counted but not invalidated.
+- Invalidating a key that does not exist stores nothing and still reports success (idempotent).
+- The tombstone's `deletedAt` is the hub's write time; `updatedAt` is bumped so `since`-based readers converge.
+
+### Error codes
+
+| Status | Code | Meaning |
+|---|---|---|
+| `401` | `unauthorized` | Missing/wrong secret. |
+| `400` | `bad_request` | Malformed JSON, non-array `entries`/`keys`, invalid `client`/`sessionId`. |
+| `404` | `catalog_unavailable` | Hub does not implement the catalog (Worker or older Node hub). |
+| `413` | `payload_too_large` | Body over 1 MiB. |
+| `413` | `batch_too_large` | Batch over the per-route entry cap (1000 upsert / 500 invalidate). |
+| `500` | `internal_error` | Store failure. |
+
+### Downgrade behavior (old Hub / old client)
+
+- **New client → old Hub**: catalog routes return `404 catalog_unavailable`. The client must treat the catalog as unsupported, skip all catalog sync (no retries, no error spam), and keep device-line ingest + SSE working normally. Local catalog collection continues; it is simply never uploaded.
+- **Old client → new Hub**: the client never calls catalog routes; the catalog store stays empty. Device-line behavior is byte-for-byte unchanged.
+- **Hub restart / device offline**: catalog records are durable (SQLite, fsynced per transaction); an offline device's entries remain queryable by others, and its `since`-based catch-up resumes where it left off.
+- The catalog is never part of `publicStats` / `publicLimits`; all catalog routes sit behind the shared `secret` gate.
