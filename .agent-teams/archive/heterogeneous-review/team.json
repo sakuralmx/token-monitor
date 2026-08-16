@@ -12,7 +12,7 @@
       "provider": "yx",
       "model": "gpt-5.6-terra",
       "joinedAt": 1786909483321,
-      "status": "idle"
+      "status": "removed"
     },
     {
       "id": "ca3f8b53-a99e-409c-b834-1bbc22ca43c3",
@@ -21,7 +21,7 @@
       "provider": "yx",
       "model": "gpt-5.6-sol",
       "joinedAt": 1786909495640,
-      "status": "idle"
+      "status": "removed"
     },
     {
       "id": "61044413-d799-4391-ac55-8e11bea592a6",
@@ -31,7 +31,7 @@
       "model": "deepseek-v4-flash",
       "reasoningEffort": "high",
       "joinedAt": 1786909495658,
-      "status": "idle"
+      "status": "removed"
     }
   ],
   "tasks": [
@@ -81,15 +81,15 @@
       "id": "t4",
       "subject": "队长综合审查",
       "description": "对当前 personal 分支做独立全量审查，重点变更基线 0af5213..HEAD 及 docs/review.md 已修复 11 项；只读，不改代码。可运行针对性测试，报告最可能漏网的严重/一般问题及验证结果。",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "attempt": 2,
       "createdAt": 1786909506344,
-      "updatedAt": 1786909784709,
+      "updatedAt": 1786909851656,
       "assignee": "captain",
       "reassigning": false,
       "attemptId": "d2343f8c-e85a-4c70-acdc-23b054dba53e",
-      "output": "队长汇总异源问题与验证结果，准备落地 docs/review.md。"
+      "output": "已汇总异源审查并原样保留关键发现到 docs/review.md：3 严重、5 一般；lint 通过，focused catalog tests 44/44 通过但存在时序覆盖盲区。报告与 .agent-teams 原始记录已 commit 709710a。"
     }
   ],
   "taskSeq": 4
