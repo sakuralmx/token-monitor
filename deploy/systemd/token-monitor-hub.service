@@ -1,0 +1,38 @@
+# Token Monitor Hub — systemd unit template (Aliyun ECS / any Linux server)
+# Install to /etc/systemd/system/token-monitor-hub.service
+#
+# Security contract: the hub MUST listen only on loopback. A separate HTTPS
+# reverse proxy (see deploy/nginx/token-monitor-hub.conf) terminates TLS on 443
+# and forwards to 127.0.0.1:17321. TOKEN_MONITOR_HOST is explicitly pinned to
+# 127.0.0.1 below: with a secret set, the hub's default bind host is 0.0.0.0.
+
+[Unit]
+Description=Token Monitor Hub (multi-device sync + session catalog)
+Documentation=https://github.com/Javis603/token-monitor/blob/main/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=token-monitor
+Group=token-monitor
+# Runtime secrets live here (0600, root-owned, never in Git):
+#   TOKEN_MONITOR_SECRET=<openssl rand -hex 32>
+#   TOKEN_MONITOR_HOST=127.0.0.1
+#   TOKEN_MONITOR_PORT=17321
+#   TOKEN_MONITOR_DATA_FILE=/var/lib/token-monitor/devices.json
+#   TOKEN_MONITOR_CATALOG_FILE=/var/lib/token-monitor/catalog.db
+EnvironmentFile=-/etc/token-monitor/hub.env
+WorkingDirectory=/opt/token-monitor
+ExecStart=/usr/bin/node src/hub/server.js
+Restart=always
+RestartSec=5
+# Write permission for data + backups only; the code tree itself is read-only.
+ReadWritePaths=/var/lib/token-monitor
+StandardOutput=append:/var/log/token-monitor/hub.log
+StandardError=append:/var/log/token-monitor/hub.log
+# Simple resource guard; tune if this machine also runs other services.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
