@@ -26,6 +26,7 @@ ECS 公网网卡 :443 ── nginx (TLS 终结 + 限流) ──► 127.0.0.1:173
 |---|---|
 | `systemd/token-monitor-hub.service` | Hub 的 systemd 单元（回环监听、开机自启、崩溃自恢复） |
 | `nginx/token-monitor-hub.conf` | 443 → 回环 17321 的 HTTPS 反向代理模板 |
+| `nginx/token-monitor-hub-bootstrap.conf` | 首次签发前的 HTTP-01 bootstrap 配置（无 TLS 块） |
 | `certbot/cli.ini` | Certbot 配置（IP 证书、续期策略） |
 | `certbot/renewal-hook.sh` | 证书续期 deploy hook（重载 nginx） |
 | `scripts/healthcheck.sh` | 健康检查（systemd 监控 / 外部探活） |
@@ -69,37 +70,46 @@ sudo -e /etc/token-monitor/hub.env    # 设置 TOKEN_MONITOR_SECRET（openssl ra
 > 有 secret 时 hub 的默认绑定是 `0.0.0.0`（`resolveBindHost` 只在无 secret 时强制回环），
 > 漏掉这一行会让 Hub 直接暴露在公网 17321 上。
 
-### 3. 安装 systemd 单元与 nginx
+### 3. 安装 systemd 单元与 Certbot 配置
 
 ```bash
 sudo install -m 0644 deploy/systemd/token-monitor-hub.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now token-monitor-hub
 
-# nginx：按模板填写证书路径后启用
-sudo install -m 0644 deploy/nginx/token-monitor-hub.conf /etc/nginx/sites-available/token-monitor-hub
-sudo ln -s /etc/nginx/sites-available/token-monitor-hub /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+# Certbot 配置 + 续期 deploy hook + ACME webroot（先装好，签发时直接可用）
+sudo install -m 0644 deploy/certbot/cli.ini /etc/letsencrypt/cli.ini
+sudo install -m 0755 deploy/certbot/renewal-hook.sh /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+sudo mkdir -p /var/www/certbot
 ```
 
-### 4. 签发 IP 证书
+### 4. 签发 IP 证书（先 bootstrap，再启用 HTTPS）
 
-Let's Encrypt 支持给公网 IP 签发证书（HTTP-01 校验，需要 80 端口可访问）：
+Let's Encrypt 支持给公网 IP 签发证书（HTTP-01 校验，需要 80 端口可访问）。**必须先装 HTTP-only 的 bootstrap 配置**——此时还没有证书，直接启用含 `ssl_certificate` 的完整模板会让 `nginx -t` 失败。
 
 ```bash
-# 先让 nginx 模板里 / 的 80 重定向临时放行 http-01（模板已内置 /.well-known/acme-challenge/ 直通）
+# 第一步：bootstrap 配置（只有 HTTP-01 webroot，无 TLS 块）
+sudo install -m 0644 deploy/nginx/token-monitor-hub-bootstrap.conf /etc/nginx/sites-available/token-monitor-hub
+sudo ln -s /etc/nginx/sites-available/token-monitor-hub /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+
+# 第二步：签发 IP 证书（HTTP-01 走 bootstrap 的 /.well-known/acme-challenge/）
 sudo certbot certonly \
   --config /etc/letsencrypt/cli.ini \
   --webroot -w /var/www/certbot \
   -d 1.2.3.4 \
   --deploy-hook /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 
+# 第三步：换成完整 HTTPS 模板并 reload
+sudo install -m 0644 deploy/nginx/token-monitor-hub.conf /etc/nginx/sites-available/token-monitor-hub
+sudo nginx -t && sudo systemctl reload nginx
+
 # 确认签发成功
 sudo certbot certificates
 ```
 
 > IP 证书要求 Certbot ≥ 2.9 / 较新的 ACME 客户端。老版本报 `No IP addresses in request` 时先升级。
-> 首次签发后把 nginx 模板里的 `ssl_certificate*` 路径填成 `/etc/letsencrypt/live/1.2.3.4/` 下的文件并 reload。
+> 完整模板里的 `ssl_certificate*` 路径已指向 `/etc/letsencrypt/live/1.2.3.4/`，签好后无需再手改。
 
 ### 5. 验证
 
