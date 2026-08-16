@@ -104,3 +104,27 @@
 - `npm run lint` 干净；`npm test` 3197 项中 3189 通过、7 跳过、1 失败（`macWidgetLaunchServicesRecovery` Windows symlink EPERM，改动前即存在的环境性失败）。
 - Catalog 专项测试 70/70 通过（含新增 11 项乱序时序测试）。
 - 仍待真实环境验收：阿里云 ECS 部署、两台设备错峰互看。
+
+## 本轮更新复核（2026-08-17）
+
+### 审查范围
+
+针对上一轮返工后新增的未提交修复，复核 3 项问题：主键规范化一致性、客户端远端墓碑合并规则、删除后重现条目的事件时间收敛。复核方式：运行 Catalog 专项测试、完整 lint/test，并进行对抗式复查。
+
+### 修复确认
+
+- **主键规范化：已修复。** `invalidateKeys` 改用 `normalizeCatalogKey`，与 `normalizeCatalogEntry` 的 `sanitizeId` 规则一致；双空格和 Unicode 分解字符回归测试均通过，不再生成幽灵墓碑。
+- **远端旧墓碑覆盖新内容：已修复。** `mergeRemoteCatalog` 对 live 条目要求 `remoteDeletedAt >= updatedAt`，对已删除条目要求删除时间严格递增；专项测试通过。
+- **复活事件时间间隙：已修复。** 只要本地存在 `deletedAt` 且重现条目的时间不严格晚于删除时间，即使用 `monotonicAfter` 制造严格更新事件；针对 `01:30` 内容时间与 `02:00` 删除时间的回归测试通过。
+
+### 验证记录
+
+- `npm.cmd run lint`：通过。
+- `node --test tests/shared/catalogStore.test.js tests/shared/catalogSync.test.js tests/shared/sessionCatalog.test.js`：58/58 通过。
+- `npm.cmd test`：3194 通过、7 跳过、1 失败（`tests/electron/macWidgetLaunchServicesRecovery.test.js` 在 Windows 创建 macOS 模拟 symlink 时因 EPERM 失败；与本轮改动无关，且此前已有该环境限制）。
+- `git diff --check`：通过。
+- 对抗式复查：严重/一般问题 0；建议 2 项：`mergeRemoteCatalog` 当前无生产调用方（死代码，单测已覆盖），以及读侧 `listSessions` 对 deviceId 仍使用旧 `cleanText` 规则导致极少见的特殊 deviceId 过滤不一致。两项均非本轮新增回归，不阻塞交付。
+
+### 本轮结论
+
+本轮 3 项一般问题均已真实消失，新增修复可交付。保留 Windows symlink 环境性测试失败与真实 ECS/双设备验收待办。

@@ -170,6 +170,53 @@ test('soft delete tombstones and hides by default, resurrect on re-upload', { sk
   }
 });
 
+test('invalidate normalizes the key exactly like upsert (interior whitespace does not ghost-tombstone)', { skip: !sqliteAvailable }, () => {
+  const { store, dir } = makeStore();
+  try {
+    // sanitizeId preserves interior double spaces, so the upsert stores the key
+    // verbatim. invalidateKeys must derive the key the same way, not collapse it
+    // through cleanText into a different key — otherwise the delete would hit a
+    // nonexistent row (ghost tombstone) and leave the original entry live.
+    store.upsertEntries([entry({ sessionId: 'my  session' })]);
+    const inv = store.invalidateKeys([
+      { deviceId: 'macbook', client: 'codex', sessionId: 'my  session', deletedAt: '2026-08-10T02:00:00.000Z' }
+    ]);
+    assert.equal(inv.invalidated, 1);
+    assert.equal(inv.rejected, 0);
+    assert.equal(store.listSessions({}).entries.length, 0); // original row tombstoned
+    const withDeleted = store.listSessions({ includeDeleted: true });
+    assert.equal(withDeleted.entries.length, 1); // no second ghost row
+    assert.equal(withDeleted.entries[0].sessionId, 'my  session');
+    assert.equal(withDeleted.entries[0].deletedAt, '2026-08-10T02:00:00.000Z');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('invalidate normalizes the key exactly like upsert (decomposed vs composed session id)', { skip: !sqliteAvailable }, () => {
+  const { store, dir } = makeStore();
+  try {
+    // sanitizeId does not NFC-normalize, so a decomposed session id is stored
+    // decomposed. invalidateKeys must not NFC-normalize either, or the composed
+    // key would miss the stored row and produce a ghost tombstone.
+    const decomposed = 'cafe\u0301'; // "café" as e + combining acute
+    store.upsertEntries([entry({ sessionId: decomposed })]);
+    const inv = store.invalidateKeys([
+      { deviceId: 'macbook', client: 'codex', sessionId: decomposed, deletedAt: '2026-08-10T02:00:00.000Z' }
+    ]);
+    assert.equal(inv.invalidated, 1);
+    assert.equal(inv.rejected, 0);
+    assert.equal(store.listSessions({}).entries.length, 0);
+    const withDeleted = store.listSessions({ includeDeleted: true });
+    assert.equal(withDeleted.entries.length, 1);
+    assert.equal(withDeleted.entries[0].sessionId, decomposed);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('hub re-sanitizes path-shaped workspace fields and control chars (server-side privacy)', { skip: !sqliteAvailable }, () => {
   const { store, dir } = makeStore();
   try {

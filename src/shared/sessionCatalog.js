@@ -151,15 +151,31 @@ function sanitizeId(value, maxChars) {
   return truncateByCodePoint(text, maxChars).trim();
 }
 
-// Whitelist-normalize one raw entry into the wire shape. Unknown fields are
-// dropped; malformed fields are dropped per-field (never invented). Returns null
-// when the entry has no usable primary key.
-function normalizeCatalogEntry(raw) {
+// Normalize the primary key (deviceId, client, sessionId) into its single
+// canonical form. Every path that addresses a catalog row by key — the upsert
+// (via normalizeCatalogEntry) and the tombstone (via the hub's invalidateKeys) —
+// must derive the key through this one function, or a delete can land on a
+// differently-normalized key (e.g. collapsed whitespace), leaving the original
+// row live while creating a ghost tombstone. Note that sanitizeId deliberately
+// does NOT collapse whitespace or NFC-normalize, so this function is the only
+// thing that can keep the two write paths agreeing on key shape.
+function normalizeCatalogKey(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const deviceId = sanitizeId(raw.deviceId, DEVICE_ID_MAX_CHARS);
   const client = String(raw.client || '').trim().toLowerCase();
   const sessionId = sanitizeId(raw.sessionId, SESSION_ID_MAX_CHARS);
   if (!deviceId || !CATALOG_CLIENTS.includes(client) || !sessionId) return null;
+  return { deviceId, client, sessionId };
+}
+
+// Whitelist-normalize one raw entry into the wire shape. Unknown fields are
+// dropped; malformed fields are dropped per-field (never invented). Returns null
+// when the entry has no usable primary key.
+function normalizeCatalogEntry(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const key = normalizeCatalogKey(raw);
+  if (!key) return null;
+  const { deviceId, client, sessionId } = key;
 
   const entry = {
     deviceId,
@@ -236,6 +252,7 @@ module.exports = {
   LABEL_MAX_CHARS,
   buildCatalogEntry,
   normalizeCatalogEntry,
+  normalizeCatalogKey,
   sanitizeLabel,
   sanitizeText,
   sanitizeTitle,

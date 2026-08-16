@@ -18,7 +18,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { normalizeCatalogEntry } = require('./sessionCatalog');
+const { normalizeCatalogEntry, normalizeCatalogKey } = require('./sessionCatalog');
 
 const CATALOG_SCHEMA_VERSION = 1;
 
@@ -371,7 +371,13 @@ function createCatalogStore({ file, logger = console } = {}) {
     db.exec('BEGIN');
     try {
       for (const key of keys || []) {
-        if (!key || !key.deviceId || !key.sessionId || !VALID_CLIENTS.has(String(key.client || '').toLowerCase())) {
+        // Normalize the key with the same function the upsert path uses
+        // (normalizeCatalogEntry → normalizeCatalogKey). Using cleanText here
+        // collapsed whitespace / NFC-normalized, which produced a different key
+        // than the row the upsert stored — the delete then hit a nonexistent row
+        // (creating a ghost tombstone) and left the original entry live.
+        const normalized = normalizeCatalogKey(key);
+        if (!normalized) {
           rejected += 1;
           rejectedKeys.push({
             deviceId: String(key?.deviceId || '').trim(),
@@ -383,9 +389,9 @@ function createCatalogStore({ file, logger = console } = {}) {
         }
         const eventTime = isoOf(key.deletedAt) || now;
         const result = tombstoneStmt.run(
-          cleanText(key.deviceId, 100),
-          String(key.client).toLowerCase(),
-          cleanText(key.sessionId, 200),
+          normalized.deviceId,
+          normalized.client,
+          normalized.sessionId,
           eventTime,
           eventTime,
           eventTime

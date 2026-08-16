@@ -81,10 +81,17 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
       && updatedAt === previous.updatedAt
       && (contentFingerprint(entry) !== `${previous.titleSource || 'fallback'}\u0000${previous.title || ''}`);
     // Explicit resurrection: the client previously soft-deleted this entry and it
-    // has now reappeared with no newer content time. Upload it with a strictly
-    // newer event time so the hub accepts the resurrection instead of treating it
-    // as a stale replay of the delete (which its tombstone guard would refuse).
-    const isResurrection = !isNew && !isNewer && !isSameTimeChange && Boolean(previous?.deletedAt);
+    // has now reappeared. The hub's tombstone guard (catalogStore `winnerExpr`)
+    // refuses any upsert whose updated_at is not strictly newer than deleted_at,
+    // so whenever the raw content time does not beat the delete we manufacture a
+    // strictly-later event time and upload that instead. This must NOT be gated
+    // on !isNewer: a content time that is newer than the last-seen content but
+    // still not later than the delete would otherwise be uploaded raw, the hub
+    // would refuse it as a silent no-op (it reports the row as accepted), and
+    // nextState would clear deletedAt locally — a permanent divergence where the
+    // client believes the entry is live while the hub keeps it deleted.
+    const isResurrection = Boolean(previous?.deletedAt)
+      && !(updatedAt && updatedAt > previous.deletedAt);
     const effectiveUpdatedAt = isResurrection ? monotonicAfter(previous.deletedAt) : updatedAt;
     if (isNew || isNewer || isSameTimeChange || isResurrection) {
       upserts.push(isResurrection ? { ...entry, updatedAt: effectiveUpdatedAt } : entry);
@@ -288,9 +295,16 @@ function mergeRemoteCatalog({ state = {}, entries = [] } = {}) {
     const remoteDeletedAt = isoOf(entry.deletedAt);
     if (remoteDeletedAt) {
       // A remote tombstone must tombstone the local state (never merge as live),
-      // but only when it is strictly newer than any delete the client already knows.
+      // but only under the hub's own invalidate guard (catalogStore.js
+      // `tombstoneStmt`): an alive entry is tombstoned iff the delete event time
+      // is not older than its content time, and an already-deleted entry only
+      // refreshes on a strictly newer delete. Mirroring both halves here stops an
+      // old remote tombstone from clobbering a locally-more-recent live entry.
       const prior = nextState[key];
-      if (!prior?.deletedAt || remoteDeletedAt > prior.deletedAt) {
+      const wins = !prior?.deletedAt
+        ? (!prior?.updatedAt || remoteDeletedAt >= prior.updatedAt)
+        : remoteDeletedAt > prior.deletedAt;
+      if (wins) {
         nextState[key] = { ...prior, updatedAt: prior?.updatedAt || '', deletedAt: remoteDeletedAt };
       }
       continue;

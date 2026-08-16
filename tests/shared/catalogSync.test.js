@@ -142,6 +142,44 @@ test('an entry that reappears after an explicit delete is resurrected with a new
   assert.equal(resurrected.nextState[entryKey(entry())].deletedAt, undefined); // tombstone cleared
 });
 
+test('a reappearing entry newer than old content but not later than the delete is resurrected with a newer event time', () => {
+  const first = computeCatalogDelta({ entries: [entry()] });
+  const deleted = computeCatalogDelta({
+    state: first.nextState,
+    entries: [],
+    deletes: [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1', deletedAt: '2026-08-10T02:00:00.000Z' }]
+  });
+  assert.ok(deleted.nextState[entryKey(entry())].deletedAt);
+  // Reappears with updatedAt (01:30) strictly newer than the old content
+  // (01:00) but NOT later than the delete (02:00). The raw time would be
+  // refused by the hub's tombstone guard, so the client must manufacture a
+  // strictly-later event time instead of uploading the raw 01:30 and clearing
+  // the tombstone locally (which would fork permanently).
+  const resurrected = computeCatalogDelta({
+    state: deleted.nextState,
+    entries: [entry({ updatedAt: '2026-08-10T01:30:00.000Z', lastUsedAt: '2026-08-10T01:30:00.000Z' })]
+  });
+  assert.equal(resurrected.upserts.length, 1);
+  assert.ok(resurrected.upserts[0].updatedAt > '2026-08-10T02:00:00.000Z'); // strictly newer than the delete
+  assert.equal(resurrected.nextState[entryKey(entry())].deletedAt, undefined); // tombstone cleared
+});
+
+test('a reappearing entry strictly newer than the delete keeps its raw event time (no manufactured time)', () => {
+  const first = computeCatalogDelta({ entries: [entry()] });
+  const deleted = computeCatalogDelta({
+    state: first.nextState,
+    entries: [],
+    deletes: [{ deviceId: 'macbook', client: 'codex', sessionId: 'rollout-1', deletedAt: '2026-08-10T02:00:00.000Z' }]
+  });
+  const resurrected = computeCatalogDelta({
+    state: deleted.nextState,
+    entries: [entry({ updatedAt: '2026-08-10T03:00:00.000Z', lastUsedAt: '2026-08-10T03:00:00.000Z' })]
+  });
+  assert.equal(resurrected.upserts.length, 1);
+  assert.equal(resurrected.upserts[0].updatedAt, '2026-08-10T03:00:00.000Z'); // raw time already beats the delete
+  assert.equal(resurrected.nextState[entryKey(entry())].deletedAt, undefined);
+});
+
 test('a vanished session without an explicit delete is not invalidated', () => {
   const first = computeCatalogDelta({ entries: [entry()] });
   const later = computeCatalogDelta({ state: first.nextState, entries: [] });
@@ -297,6 +335,39 @@ test('mergeRemoteCatalog uses the hub tie rule: local beats fallback at the same
   });
   assert.equal(reverse.mergedEntries.length, 0);
   assert.equal(reverse.nextState[entryKey(entry())].titleSource, 'local');
+});
+
+test('mergeRemoteCatalog tombstone mirrors the hub invalidate guard', () => {
+  const key = entryKey(entry());
+
+  // An old remote tombstone must not clobber a locally-more-recent live entry.
+  const aliveNew = mergeRemoteCatalog({
+    state: { [key]: { updatedAt: '2026-08-10T02:00:00.000Z', title: 'Live', titleSource: 'local' } },
+    entries: [entry({ deletedAt: '2026-08-10T01:00:00.000Z' })]
+  });
+  assert.equal(aliveNew.nextState[key].deletedAt, undefined);
+  assert.equal(aliveNew.nextState[key].updatedAt, '2026-08-10T02:00:00.000Z');
+  assert.equal(aliveNew.mergedEntries.length, 0); // a tombstone is never merged as live
+
+  // A delete at (or after) the content time tombstones an alive entry.
+  const aliveTie = mergeRemoteCatalog({
+    state: { [key]: { updatedAt: '2026-08-10T02:00:00.000Z', title: 'Live', titleSource: 'local' } },
+    entries: [entry({ deletedAt: '2026-08-10T02:00:00.000Z' })]
+  });
+  assert.equal(aliveTie.nextState[key].deletedAt, '2026-08-10T02:00:00.000Z');
+
+  // An already-deleted entry only refreshes on a strictly newer delete.
+  const deletedState = { [key]: { updatedAt: '2026-08-10T01:00:00.000Z', deletedAt: '2026-08-10T02:00:00.000Z' } };
+  const staleRefresh = mergeRemoteCatalog({
+    state: deletedState,
+    entries: [entry({ deletedAt: '2026-08-10T01:00:00.000Z' })]
+  });
+  assert.equal(staleRefresh.nextState[key].deletedAt, '2026-08-10T02:00:00.000Z');
+  const newerRefresh = mergeRemoteCatalog({
+    state: deletedState,
+    entries: [entry({ deletedAt: '2026-08-10T03:00:00.000Z' })]
+  });
+  assert.equal(newerRefresh.nextState[key].deletedAt, '2026-08-10T03:00:00.000Z');
 });
 
 test('entryKey and keyOf round-trip and reject undefined parts', () => {
