@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('tokenMonitor', {
   getHubInfo: () => ipcRenderer.invoke('hub:getInfo'),
   getHubBuildStatus: () => ipcRenderer.invoke('hub:getBuildStatus'),
   testHubConnection: () => ipcRenderer.invoke('hub:testConnection'),
+  getLocalCatalogEntries: () => ipcRenderer.invoke('catalog:getLocal'),
   regenerateHubSecret: () => ipcRenderer.invoke('hub:regenerateSecret'),
   onHubPush: (callback) => {
     const listener = (_event, payload) => { try { callback(payload); } catch (_) {} };

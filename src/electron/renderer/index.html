@@ -1381,6 +1381,9 @@
               <p class="settings-note hub-warning" data-i18n="settings.sync.hostWarning">The hub runs while Token Monitor is running. Quitting (not just closing the window) stops the hub for all connected devices.</p>
             </div>
             <label><span data-i18n="settings.sync.deviceId">Device ID</span><input id="deviceIdInput" type="text" spellcheck="false" placeholder="auto (hostname)" data-i18n-placeholder="settings.sync.deviceIdPlaceholder" /></label>
+            <label class="settings-item"><span class="settings-item-text"><span class="settings-item-title" data-i18n="catalog.settingsTitle">Sync session metadata</span><span class="settings-item-desc" data-i18n="catalog.settingsDesc">Upload safe session metadata (workspace, title, timestamps) to the hub catalog. No conversation content, paths, usernames, or credentials are ever sent.</span></span>
+              <input id="catalogEnabledInput" type="checkbox" />
+            </label>
             <div class="settings-actions">
               <button id="saveSettingsButton" data-i18n="settings.common.save">Save</button>
             </div>
@@ -1410,6 +1413,7 @@
       <section id="serviceStatusPanel" class="service-status-panel hidden"></section>
       <section id="limitsPanel" class="limits-panel hidden"></section>
       <section id="trendsPanel" class="trends-panel hidden"></section>
+      <section id="catalogPanel" class="catalog-panel hidden"></section>
       <footer class="footer">
         <div id="viewSwitcher" class="view-switcher"></div>
         <div id="appUpdatePill" class="update-pill hidden" title="">
@@ -1480,6 +1484,7 @@
     <script src="usageAttributionRows.js"></script>
     <script src="../../shared/projectKey.js"></script>
     <script src="projectRows.js"></script>
+    <script src="catalogRows.js"></script>
     <script src="sessionDetail.js"></script>
     <script src="customPricingForm.js"></script>
     <script src="../windowShortcut.js"></script>

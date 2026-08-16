@@ -287,7 +287,7 @@ const SMART_COLLECTION_INTERVAL_MS = 10 * 60 * 1000;
 const DEFAULT_COLLECTION_INTERVAL_MS = 5 * 60 * 1000;
 const HUB_DEFAULT_PORT = 17321;
 const KNOWN_CLIENT_LIST = KNOWN_CLIENTS.split(',').map((id) => ({ id }));
-const DEFAULT_VIEW_LIST = ['home', 'tool', 'status', 'device', 'model', 'project', 'session', 'limits', 'trends'].map((id) => ({ id }));
+const DEFAULT_VIEW_LIST = ['home', 'tool', 'status', 'device', 'model', 'project', 'session', 'catalog', 'limits', 'trends'].map((id) => ({ id }));
 const DEFAULT_HOME_MODULE_LIST = ['limits', 'tool', 'device', 'model', 'trends'].map((id) => ({ id }));
 const TRAY_OPEN_VIEW_IDS = new Set(['home', 'project', 'session', 'limits', 'trends', 'status']);
 
@@ -394,6 +394,11 @@ function defaultSettings() {
     showHomeLimitProviderNames: false,
     projectsEnabled: parseBoolean(process.env.TOKEN_MONITOR_PROJECTS_ENABLED, false),
     historyEnabled: true,
+    // Session metadata sync (plan T10): collects Cherry Studio / Codex / DSH
+    // session titles + workspaces into the hub catalog. Off by default until
+    // the user opts in; the settings panel explains what is synced.
+    catalogEnabled: parseBoolean(process.env.TOKEN_MONITOR_CATALOG_ENABLED, false),
+    catalogSyncState: {},
     historyIntervalMs: normalizeHistoryIntervalMs(process.env.TOKEN_MONITOR_HISTORY_INTERVAL_MS),
     sessionUsageArchiveEnabled: parseBoolean(process.env.TOKEN_MONITOR_SESSION_USAGE_ARCHIVE_ENABLED, true),
     wslScanEnabled: parseBoolean(process.env.TOKEN_MONITOR_WSL_SCAN, true),
@@ -4587,6 +4592,7 @@ function stopCatalogSync() {
 
 function startCatalogSync() {
   stopCatalogSync();
+  if (settings?.catalogEnabled === false) return; // user disabled session metadata sync
   const { url, secret } = effectiveHubConfig();
   if (!url) return; // local mode: nothing to upload to; state stays pending
   catalogSyncController = createCatalogSyncController({
@@ -4603,6 +4609,24 @@ function startCatalogSync() {
   catalogSyncController.start().catch((error) => {
     console.log(`[catalog] initial sync failed: ${error?.message || error}`);
   });
+}
+
+// Renderer view: the locally scanned catalog entries (whatever mode the widget
+// is in). The hub is the permanent store, but the UI reads the local adapters
+// so it works offline and in local mode; synced entries arrive from the hub via
+// the normal stats/stream path when configured.
+function getLocalCatalogEntries() {
+  if (settings?.catalogEnabled === false) return { entries: [], enabled: false };
+  const home = os.homedir();
+  const deviceId = settings?.deviceId || defaultDeviceId();
+  const deps = { deviceId, home, env: process.env, platform: process.platform };
+  let entries = [];
+  try { entries.push(...scanCherryStudioSessions(deps)); } catch (_) {}
+  try { entries.push(...scanCodexSessions(deps)); } catch (_) {}
+  let dshResult = { entries: [] };
+  try { dshResult = scanDshSessions(deps); } catch (_) {}
+  entries.push(...dshResult.entries);
+  return { entries, enabled: true, zstdAvailable: dshResult.zstdAvailable !== false };
 }
 
 function startMode() {
@@ -6244,6 +6268,7 @@ app.whenReady().then(() => {
   ipcMain.handle('hub:getInfo', () => getHubInfo());
   ipcMain.handle('hub:getBuildStatus', () => getHubBuildStatus());
   ipcMain.handle('hub:testConnection', () => testHubConnection());
+  ipcMain.handle('catalog:getLocal', () => getLocalCatalogEntries());
   ipcMain.handle('hub:regenerateSecret', () => {
     settings.hubHostSecret = generateHubSecret();
     saveSettings({ throwOnError: true });
