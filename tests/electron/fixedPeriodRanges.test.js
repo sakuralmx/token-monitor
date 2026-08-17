@@ -649,7 +649,7 @@ test('fixed periods fail closed without History and for unsupported detail views
     historyAvailable: false,
     historyEnabled: false
   }).reason, 'historyDisabled');
-  assert.equal(ranges.supportsBreakdown('last7', 'session'), false);
+  assert.equal(ranges.supportsBreakdown('last7', 'session'), true);
   assert.equal(ranges.supportsBreakdown('last7', 'project'), false);
   assert.equal(ranges.supportsBreakdown('last7', 'device', { deviceHistoriesAvailable: true }), true);
   assert.equal(ranges.supportsBreakdown('last7', 'device', { deviceHistoriesAvailable: false }), false);

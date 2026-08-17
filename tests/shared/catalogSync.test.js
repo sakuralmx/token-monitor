@@ -377,20 +377,20 @@ test('entryKey and keyOf round-trip and reject undefined parts', () => {
   assert.equal(bad.invalidateKeys.length, 0);
 });
 
-test('fetchHubCatalogEntries walks cursor pagination and aggregates entries', async () => {
+test('fetchHubCatalogEntries reads one bounded recent page without preloading history', async () => {
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(url);
-    if (url.includes('cursor=next')) {
-      return { ok: true, status: 200, async json() { return { entries: [entry({ sessionId: 'b' })], hasMore: false, nextCursor: '' }; } };
-    }
     return { ok: true, status: 200, async json() { return { entries: [entry({ sessionId: 'a' })], hasMore: true, nextCursor: 'next' }; } };
   };
   const result = await fetchHubCatalogEntries({ fetchFn: fetchImpl, baseUrl: 'https://hub.example', secret: 'shh' });
   assert.equal(result.source, 'hub');
-  assert.equal(result.entries.length, 2);
-  assert.equal(calls.length, 2);
-  assert.ok(calls[0].includes('limit=500'));
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.nextCursor, 'next');
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes('limit=200'));
+  assert.doesNotMatch(calls[0], /cursor=/);
 });
 
 test('fetchHubCatalogEntries falls back to local on unreachable / no-catalog / bad response', async () => {

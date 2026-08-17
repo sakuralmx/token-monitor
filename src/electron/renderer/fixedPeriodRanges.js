@@ -659,7 +659,7 @@
 
   function supportsBreakdown(selection, breakdown, options = {}) {
     if (!isDerived(selection)) return true;
-    if (breakdown === 'session' || breakdown === 'project') return false;
+    if (breakdown === 'project') return false;
     if (breakdown === 'device') return options.deviceHistoriesAvailable === true;
     return true;
   }

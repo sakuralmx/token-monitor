@@ -230,37 +230,35 @@ function checkpointAccepted({ nextState, rejectedKeys = [] } = {}) {
   return out;
 }
 
-// Fetch the hub's permanent catalog with cursor pagination (used by the widget's
-// Catalog view in client/host mode). Returns { entries, source, ... } where
+// Fetch one bounded page from the hub's permanent catalog (used by the widget's
+// Session view in client/host mode). Returns { entries, source, ... } where
 // source is 'hub' on success and 'local' on any fallback (unreachable, no
 // catalog, or a bad response) — the caller always has local data to show.
-async function fetchHubCatalogEntries({ fetchFn, baseUrl = '', secret = '', logger } = {}) {
+async function fetchHubCatalogEntries({ fetchFn, baseUrl = '', secret = '', logger, limit = 200 } = {}) {
   const fetchImpl = fetchFn || fetch;
   const base = String(baseUrl || '').replace(/\/$/, '');
   if (!base) return { entries: [], source: 'local', reason: 'no_hub' };
   const headers = { ...(secret ? { authorization: `Bearer ${secret}` } : {}) };
-  const collected = [];
-  let cursor = '';
-  const maxPages = 50; // safety bound; a real catalog is far smaller
-  for (let page = 0; page < maxPages; page += 1) {
-    const query = new URLSearchParams({ limit: '500' });
-    if (cursor) query.set('cursor', cursor);
-    let response;
-    try {
-      response = await fetchImpl(`${base}/api/catalog/v1/sessions?${query}`, { headers });
-    } catch (_) {
-      return { entries: [], source: 'local', reason: 'unreachable' };
-    }
-    if (response.status === 404) return { entries: [], source: 'local', reason: 'catalog_unavailable' };
-    if (!response.ok) return { entries: [], source: 'local', reason: `http_${response.status}` };
-    const payload = await response.json().catch(() => null);
-    if (!payload || !Array.isArray(payload.entries)) return { entries: [], source: 'local', reason: 'bad_response' };
-    collected.push(...payload.entries);
-    if (!payload.hasMore || !payload.nextCursor) break;
-    cursor = payload.nextCursor;
+  const pageSize = Math.min(500, Math.max(1, Math.round(Number(limit)) || 200));
+  const query = new URLSearchParams({ limit: String(pageSize) });
+  let response;
+  try {
+    response = await fetchImpl(`${base}/api/catalog/v1/sessions?${query}`, { headers });
+  } catch (_) {
+    return { entries: [], source: 'local', reason: 'unreachable' };
   }
-  if (typeof logger === 'function') logger(`fetched ${collected.length} catalog entries from hub`);
-  return { entries: collected, source: 'hub' };
+  if (response.status === 404) return { entries: [], source: 'local', reason: 'catalog_unavailable' };
+  if (!response.ok) return { entries: [], source: 'local', reason: `http_${response.status}` };
+  const payload = await response.json().catch(() => null);
+  if (!payload || !Array.isArray(payload.entries)) return { entries: [], source: 'local', reason: 'bad_response' };
+  const entries = payload.entries.slice(0, pageSize);
+  if (typeof logger === 'function') logger(`fetched ${entries.length} recent catalog entries from hub`);
+  return {
+    entries,
+    source: 'hub',
+    hasMore: payload.hasMore === true,
+    nextCursor: payload.hasMore === true ? String(payload.nextCursor || '') : ''
+  };
 }
 
 // Unified whole-record conflict comparator shared by the client merge path; it

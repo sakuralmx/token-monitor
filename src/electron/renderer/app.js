@@ -2142,7 +2142,16 @@ function catalogByKeyForSessionRows() {
   return map;
 }
 
+function selectedCatalogEntries() {
+  const now = new Date();
+  const range = fixedPeriodRangesApi.isDerived(state.period)
+    ? fixedPeriodRangesApi.rangeForSelection(state.period, { now, locale: currentLocale() })
+    : null;
+  return sessionRowsApi.catalogEntriesForPeriod(state.catalogEntries || [], state.period, { now, range });
+}
+
 function sessionRowsForPeriod(period) {
+  const catalogEntries = selectedCatalogEntries();
   const rows = sessionRowsApi.sessionRowsForPeriod(period, {
     clientLabels,
     clientColors,
@@ -2151,6 +2160,7 @@ function sessionRowsForPeriod(period) {
     fallbackColors: fallbackModelColors,
     archivedLabel: t('session.archived'),
     catalogByKey: catalogByKeyForSessionRows(),
+    catalogEntries,
     nativeSessions: state.stats?.nativeSessions?.[state.period] || {}
   });
   if (rows.length > 0) return rows.sort((a, b) => b.sortTime - a.sortTime || b.value - a.value || b.cost - a.cost || a.name.localeCompare(b.name));

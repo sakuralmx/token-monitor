@@ -104,6 +104,46 @@
     return count > 0 ? `${formatNumber(count)} msg${count === 1 ? '' : 's'}` : '';
   }
 
+  function catalogEntriesForPeriod(entries, periodName, options = {}) {
+    const now = options.now || new Date();
+    const today = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+    const month = today.slice(0, 7);
+    const range = options.range || null;
+    return (entries || []).filter((entry) => {
+      const date = validDate(entry?.lastUsedAt || entry?.updatedAt || entry?.createdAt);
+      if (!date) return periodName === 'allTime';
+      const key = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+      if (periodName === 'today') return key === today;
+      if (periodName === 'month') return key.startsWith(month);
+      if (range?.start && range?.end) return key >= range.start && key <= range.end;
+      return periodName === 'allTime';
+    });
+  }
+
+  function catalogSessionRow(entry, options, now) {
+    const client = textValue(entry?.client);
+    const sessionId = textValue(entry?.sessionId);
+    const deviceId = textValue(entry?.deviceId);
+    if (!client || !sessionId || !deviceId) return null;
+    const clientLabel = options.clientLabels?.[client] || client;
+    const value = Math.max(0, finiteNumber(entry?.stats?.totalTokens));
+    return {
+      key: `catalog:${deviceId}:${client}:${sessionId}`,
+      kind: 'session',
+      workspaceLabel: textValue(entry?.workspaceLabel) || '—',
+      name: textValue(entry?.title) || clientLabel,
+      subtitle: `${clientLabel} · —`,
+      detail: [compactSessionTime(entry?.lastUsedAt || entry?.updatedAt, now), messageLabel(entry)].filter(Boolean).join(' · '),
+      value,
+      cost: Math.max(0, finiteNumber(entry?.stats?.costUsd)),
+      color: options.clientColors?.[client] || stableColor(`${deviceId}:${client}`, options.fallbackColors || fallbackColors),
+      stale: false,
+      client,
+      sortTime: sessionTimestampValue(entry),
+      catalogOnly: true
+    };
+  }
+
   function nativeSessionRow(session, key, options, now) {
     const periodTokenDataUnavailable = session?.periodTokenDataUnavailable === true;
     // Native telemetry is cumulative for a resumed Branch, but it remains a
@@ -159,6 +199,8 @@
     const palette = options.fallbackColors || fallbackColors;
     const archivedLabel = options.archivedLabel || 'Archived';
     const catalogByKey = options.catalogByKey || null;
+    const catalogEntries = Array.isArray(options.catalogEntries) ? options.catalogEntries : [];
+    const catalogIdentities = new Set(catalogEntries.map((entry) => `${entry?.client || ''}:${entry?.sessionId || ''}`));
     const now = options.now || new Date();
     const rows = Object.entries(period?.sessions || {})
       .map(([key, session]) => {
@@ -167,6 +209,7 @@
         if (value <= 0) return null;
         const { client, titleParts, clientLabel, modelLabel } = sessionTitleParts(session, labels);
         const sessionId = session?.sessionId || key;
+        if (catalogIdentities.has(`${client}:${sessionId}`)) return null;
         const archived = session?.archived === true || session?.deleted === true || session?.sourceDeleted === true;
         // A session-catalog match upgrades the row label to the real title and
         // shows the first line as the subtitle; the client·model text moves into
@@ -199,6 +242,10 @@
         };
       })
       .filter(Boolean);
+    for (const entry of catalogEntries) {
+      const row = catalogSessionRow(entry, options, now);
+      if (row) rows.push(row);
+    }
     for (const [key, session] of Object.entries(options.nativeSessions || {})) {
       const row = nativeSessionRow(session, key, options, now);
       if (row) rows.push(row);
@@ -228,6 +275,7 @@
 
   return {
     archivedSessionCount,
+    catalogEntriesForPeriod,
     compactSessionTime,
     sessionBreakdownIncomplete,
     sessionIdLabel,

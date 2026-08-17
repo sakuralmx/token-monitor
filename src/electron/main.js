@@ -4627,7 +4627,9 @@ function getLocalCatalogEntries() {
   let dshResult = { entries: [] };
   try { dshResult = scanDshSessions(deps); } catch (_) {}
   entries.push(...dshResult.entries);
-  return { entries, enabled: true, zstdAvailable: dshResult.zstdAvailable !== false };
+  entries.sort((left, right) => Date.parse(right?.lastUsedAt || right?.updatedAt || 0) - Date.parse(left?.lastUsedAt || left?.updatedAt || 0));
+  const hasMore = entries.length > 200;
+  return { entries: entries.slice(0, 200), enabled: true, zstdAvailable: dshResult.zstdAvailable !== false, hasMore };
 }
 
 // Catalog view in client/host mode: read the *permanent* catalog from the hub
@@ -4641,7 +4643,7 @@ async function getHubCatalogEntries() {
   if (!hubUrl) return { ...local, source: 'local' };
   const remote = await fetchHubCatalogEntries({ fetchFn: fetch, baseUrl: hubUrl, secret });
   if (remote.source === 'hub') {
-    return { entries: remote.entries, enabled: true, zstdAvailable: true, source: 'hub' };
+    return { entries: remote.entries, enabled: true, zstdAvailable: true, source: 'hub', hasMore: remote.hasMore === true };
   }
   return { ...local, source: 'local', hubReason: remote.reason };
 }

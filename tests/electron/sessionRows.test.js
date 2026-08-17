@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { archivedSessionCount, sessionBreakdownIncomplete, sessionIdLabel, sessionRowsForPeriod } = require('../../src/electron/renderer/sessionRows');
+const { archivedSessionCount, catalogEntriesForPeriod, sessionBreakdownIncomplete, sessionIdLabel, sessionRowsForPeriod } = require('../../src/electron/renderer/sessionRows');
 
 const clientLabels = { claude: 'Claude Code', codex: 'Codex' };
 const clientColors = { claude: '#cc7c5e', codex: '#49a3b0', default: '#6ab4f0' };
@@ -90,6 +90,60 @@ test('a catalog match upgrades the row to a real title and first-line descriptio
   assert.equal(rows[0].name, '修复登录页');
   assert.equal(rows[0].subtitle, 'Codex · gpt-5.5');
   assert.equal(rows[0].detail, '12:07 · 2 msgs');
+});
+
+test('catalog-only sessions keep devices separate and use the shared card fields', () => {
+  const sessionId = 'shared-id';
+  const catalogEntries = ['desktop', 'laptop'].map((deviceId, index) => ({
+    deviceId,
+    client: 'codex',
+    sessionId,
+    workspaceLabel: index ? 'remote-work' : 'local-work',
+    title: index ? 'Remote session' : 'Local session',
+    lastUsedAt: localIso(2026, 8, 17, 10 + index, 0),
+    messageCount: 2 + index,
+    stats: { totalTokens: 100 + index, costUsd: 0.01 + index }
+  }));
+  const rows = sessionRowsForPeriod({
+    sessions: {
+      [`codex:${sessionId}`]: { client: 'codex', sessionId, totalTokens: 999, models: { 'gpt-5.6': 999 } }
+    }
+  }, {
+    clientLabels,
+    clientColors,
+    catalogEntries,
+    now: new Date(2026, 7, 17, 12, 0)
+  });
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(new Set(rows.map((row) => row.key)), new Set([
+    `catalog:desktop:codex:${sessionId}`,
+    `catalog:laptop:codex:${sessionId}`
+  ]));
+  assert.equal(rows[0].workspaceLabel, 'remote-work');
+  assert.equal(rows[0].name, 'Remote session');
+  assert.equal(rows[0].subtitle, 'Codex · —');
+  assert.equal(rows[0].detail, '11:00 · 3 msgs');
+  assert.equal(rows[0].value, 101);
+  assert.equal(rows[0].cost, 1.01);
+  assert.equal(rows[0].catalogOnly, true);
+});
+
+test('catalog sessions obey every right-side period selection before rendering', () => {
+  const now = new Date(2026, 7, 17, 12, 0);
+  const entries = [
+    { sessionId: 'today', lastUsedAt: localIso(2026, 8, 17, 9, 0) },
+    { sessionId: 'week', lastUsedAt: localIso(2026, 8, 12, 9, 0) },
+    { sessionId: 'month', lastUsedAt: localIso(2026, 8, 1, 9, 0) },
+    { sessionId: 'old', lastUsedAt: localIso(2026, 7, 31, 9, 0) }
+  ];
+  assert.deepEqual(catalogEntriesForPeriod(entries, 'today', { now }).map((entry) => entry.sessionId), ['today']);
+  assert.deepEqual(catalogEntriesForPeriod(entries, 'month', { now }).map((entry) => entry.sessionId), ['today', 'week', 'month']);
+  assert.deepEqual(catalogEntriesForPeriod(entries, 'last7', {
+    now,
+    range: { start: '2026-08-11', end: '2026-08-17' }
+  }).map((entry) => entry.sessionId), ['today', 'week']);
+  assert.equal(catalogEntriesForPeriod(entries, 'allTime', { now }).length, 4);
 });
 
 test('session rows fall back to month and day for older activity', () => {
