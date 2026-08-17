@@ -164,3 +164,35 @@ test('a real percentage rebound still closes a cycle without a resetsAt change',
   assert.equal(cycles[0].endRemainingPercent, 30);
   assert.equal(cycles[1].startRemainingPercent, 90);
 });
+
+test('clientComponents extracts a non-codex client when given its id', () => {
+  const period = {
+    clients: { opencode: 5_000 },
+    clientCacheReads: { opencode: 3_000 },
+    clientCacheWrites: { opencode: 500 },
+    clientOutputs: { opencode: 1_000 }
+  };
+  const components = quota.clientComponents(period, 'opencode');
+  assert.equal(components.total, 5000);
+  assert.equal(components.cacheRead, 3000);
+  assert.equal(components.cacheWrite, 500);
+  assert.equal(components.output, 1000);
+  assert.equal(components.input, 500);
+});
+
+test('cycleSummaries reuses whole-cycle anchoring for a dollar-denominated provider', () => {
+  // OpenCode Go meters in dollars ($12/$30/$60), not tokens. The shared cycle
+  // machinery only needs a monotonic `remainingPercent` plus a cumulative
+  // components value: putting the dollar total in `input` (rest zero) lets
+  // `cycleSummaries.rawTokens` read as dollars and feed the same capacity math.
+  const observations = [
+    { remainingPercent: 100, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, at: '2026-08-01T00:00:00Z' },
+    { remainingPercent: 50, components: { input: 6, cacheRead: 0, cacheWrite: 0, output: 0 }, at: '2026-08-07T00:00:00Z' }
+  ];
+  const cycles = quota.cycleSummaries(observations);
+  assert.equal(cycles.length, 1);
+  assert.equal(cycles[0].rawTokens, 6);
+  assert.equal(cycles[0].usedPercent, 50);
+  // 6 dollars over 50% → a $12 full-window capacity, matching the published $12/5h.
+  assert.equal(quota.rawCapacityFromObservations(observations, {}).capacity, 12);
+});

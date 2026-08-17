@@ -1,8 +1,13 @@
 'use strict';
 (function init(root, factory) { const api = factory(); if (typeof module === 'object' && module.exports) module.exports = api; else root.quotaTokenEstimate = api; })(typeof globalThis !== 'undefined' ? globalThis : this, () => {
   const DEFAULT_WEIGHTS = Object.freeze({ input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6 });
+  // Default tracked client for the Codex/GPT estimate. The estimator is
+  // client-agnostic: every entry point takes an explicit client id (or carries
+  // one through `options.client`) and only falls back to this default, so the
+  // OpenCode Go estimate reuses the same closure against client `opencode`.
+  const DEFAULT_CLIENT_ID = 'codex';
   const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
-  function clientComponents(period, client = 'codex') {
+  function clientComponents(period, client = DEFAULT_CLIENT_ID) {
     const total = Math.max(0, number(period?.clients?.[client]));
     const cacheRead = Math.min(total, Math.max(0, number(period?.clientCacheReads?.[client])));
     const cacheWrite = Math.min(total - cacheRead, Math.max(0, number(period?.clientCacheWrites?.[client])));
@@ -10,7 +15,7 @@
     return { input: Math.max(0, total - cacheRead - cacheWrite - output), cacheRead, cacheWrite, output, total };
   }
   function equivalentTokens(period, options = {}) {
-    const w = { ...DEFAULT_WEIGHTS, ...(options.weights || {}) }; const p = clientComponents(period, options.client || 'codex');
+    const w = { ...DEFAULT_WEIGHTS, ...(options.weights || {}) }; const p = clientComponents(period, options.client || DEFAULT_CLIENT_ID);
     return Math.round(p.input * number(w.input, 1) + p.cacheRead * number(w.cacheRead, 0.1) + p.cacheWrite * number(w.cacheWrite, 1.25) + p.output * number(w.output, 6));
   }
   function rawTokenProjection({ capacity, remainingPercent, reservePercent = 0, components, weights } = {}) {
@@ -352,5 +357,5 @@
     return { capacity: Math.round(capacity), weights, intervals: rows.length, retainedIntervals: kept.length, remoteOrOutlierIntervals: remoteOnly + rows.length - kept.length, meanErrorPercent, confidence: rows.length >= 25 && meanErrorPercent < 15 ? 'high' : rows.length >= 12 && meanErrorPercent < 25 ? 'medium' : 'low' };
   }
 
-  return { DEFAULT_WEIGHTS, clientComponents, equivalentTokens, rawTokenProjection, rawCapacityFromObservations, cycleSummaries, estimate, normalizeCalibration, normalizeSyncSnapshot, selectSyncSnapshot, inferredCapacity, advanceCalibration, projectedHoursLeft, intervalRows, fitDeductionModel };
+  return { DEFAULT_CLIENT_ID, DEFAULT_WEIGHTS, clientComponents, equivalentTokens, rawTokenProjection, rawCapacityFromObservations, cycleSummaries, estimate, normalizeCalibration, normalizeSyncSnapshot, selectSyncSnapshot, inferredCapacity, advanceCalibration, projectedHoursLeft, intervalRows, fitDeductionModel };
 });
