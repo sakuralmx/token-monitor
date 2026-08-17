@@ -1,13 +1,13 @@
 # 审查报告
 
 > 审查日期：2026-08-17
-> 审查方式：实现者自审；范围为本轮独立目录视图移除与会话卡片重构。
+> 审查方式：实现者自审；范围为本轮有界会话加载、跨设备统一展示、时间筛选与官方 0.45.0 合并。
 
 ## 验收结论
 
-通过。独立“目录”入口已从主进程和渲染器的视图清单移除，旧 `catalog` 视图偏好会迁移到 `session`；会话元数据采集、Hub 同步、设置和懒加载仍保留，用于增强会话标题与工作间展示。
+通过。会话视图不再自动分页预取全部永久历史：Hub 和本地首屏都限制为最近 200 条，并保留 `hasMore` 供以后实现用户触发的“加载更多”。不同设备同步的 Catalog-only 会话按设备隔离、与已有用量行去重，并复用本机会话卡片结构。
 
-每个会话当前按需求显示：工作间 Tab、醒目的会话名称、工具与模型 / Token、时间与消息数量 / 价格。会话 ID 不再进入可见的标题、副标题或详情行。工作间缺失时显示中性破折号，长工作间名使用省略，详情允许窄窗口换行。
+右上角 DAY / WEEK / 7D / MONTH / 30D / TOTAL 会在渲染前过滤会话，因此可见条数随时间范围变化。官方 0.45.0 已三方合并到 `personal`；冲突处理保留了 personal 的 Cherry Studio、DSH 与会话目录功能，同时恢复官方 OpenCode、Command Code、Qoder CN、WSL 和字体等改动。
 
 ## 问题清单
 
@@ -21,11 +21,11 @@
 
 ### 建议
 
-- Catalog 元数据同步默认关闭时，没有真实标题的旧会话会继续以工具与模型作为名称回退；这不泄露 ID，也不影响结构，但开启会话元数据同步后可获得更明确的标题和工作间。
+- 当前只显示最近 200 条同步会话；这是明确的性能边界。若要浏览更早记录，应实现用户触发的加载更多或服务端搜索，不应恢复后台全量预取。
+- Catalog 协议没有模型字段时，远端 Catalog-only 卡片显示未知模型占位，不推测模型；Token 和价格仅使用已同步的可选统计摘要。
 
 ## 验证
 
-- 聚焦测试：`node --test tests/electron/sessionRows.test.js tests/electron/serviceStatusDom.test.js`，43/43 通过。
-- 补充回归：`node --test tests/electron/viewDisplayPreferences.test.js tests/shared/reasonixSessions.test.js tests/shared/reasonixSyntheticSessions.test.js`，44/44 通过。
-- ESLint：通过。
-- `npm run verify`：lint 通过；测试 3219 项中 3211 通过、7 跳过、1 失败。唯一失败为 Windows 无权创建 macOS 模拟 symlink 的 `tests/electron/macWidgetLaunchServicesRecovery.test.js`，是交接中已记录的平台限制，与本轮改动无关。
+- 聚焦测试：315/315 通过，覆盖官方 0.45 账户/WSL 回归、单页 Catalog 请求、跨设备同 ID 隔离、会话去重及全部时间筛选。
+- `npm run verify`：lint 通过；测试 3498 项中 3490 通过、7 跳过、1 失败。唯一失败为 Windows 无权创建 macOS 模拟 symlink 的 `tests/electron/macWidgetLaunchServicesRecovery.test.js`（EPERM），与实现无关。
+- Windows 打包与产物命名验证通过；0.45.0 静默安装退出码为 0，安装文件版本为 0.45.0，重启后进程稳定运行。
