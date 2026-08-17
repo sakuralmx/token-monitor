@@ -277,7 +277,10 @@ function cherryStudioEntryFromFile(deps, filePath, titles) {
   const summary = summaryOf(lines);
   const firstMessage = firstUserMessageText(lines);
   const dbTitle = titles && titles.get(sessionId) ? String(titles.get(sessionId)).trim() : '';
-  const summaryTitle = String(summary?.title || '').trim();
+  // The transcript summary title is also auto-generated and can carry the same
+  // leaked path/table formatting as the SQLite title — apply the same filter.
+  const rawSummaryTitle = String(summary?.title || '').trim();
+  const summaryTitle = isCleanAutoTitle(rawSummaryTitle) ? rawSummaryTitle : '';
   const title = dbTitle || summaryTitle || titleFromFirstUserMessage(firstMessage);
   const startedAt = firstTimestampOf(lines);
   const lastUsedAt = lastTimestampOf(lines);

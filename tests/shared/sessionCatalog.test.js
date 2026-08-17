@@ -116,6 +116,16 @@ test('fallback title comes from the first valid user message, locally truncated'
   assert.equal(titleFromFirstUserMessage(42), '42');
 });
 
+test('sanitizeTitle redacts Windows absolute paths but leaves URLs and drive-letter prose', () => {
+  assert.equal(sanitizeTitle('fix C:\\Users\\alice\\work\\x now'), 'fix now');
+  assert.equal(sanitizeTitle('D:/work/app'), '');
+  assert.equal(sanitizeTitle('see https://example.com/x'), 'see https://example.com/x');
+  assert.equal(sanitizeTitle('C: drive is fine'), 'C: drive is fine');
+  // A space inside the path stops the redaction at the first word; the remaining
+  // "Harness" fragment is harmless prose, but the drive letter + directories are gone.
+  assert.equal(sanitizeTitle('install to E:\\001\\_software\\DeepSeek Harness then continue'), 'install to Harness then continue');
+});
+
 test('workspace key is a stable one-way hash that never leaks the path', () => {
   const winPath = 'C:\\Users\\alice\\projects\\secret-project';
   const posixPath = '/Users/alice/projects/secret-project';

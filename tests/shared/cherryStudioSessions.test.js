@@ -45,11 +45,11 @@ function memoryFs(files) {
       if (typeof value !== 'string') { const err = new Error(`ENOENT: ${p}`); err.code = 'ENOENT'; throw err; }
       return { path: p, value };
     },
-    readSync(fd, buffer, offset, length) {
+    readSync(fd, buffer, offset, length, position) {
       const text = fd.value;
       const bytes = Buffer.from(text, 'utf8');
-      const sourceOffset = 0;
-      const copy = bytes.subarray(sourceOffset, sourceOffset + length);
+      const start = position || 0;
+      const copy = bytes.subarray(start, Math.min(start + length, bytes.length));
       copy.copy(buffer, offset);
       return copy.length;
     },
@@ -225,4 +225,35 @@ test('a Cherry Studio DB title outranks the transcript fallback', () => {
   const noDb = cherryStudioEntryFromFile(deps, filePath, new Map());
   assert.equal(noDb.title, '帮我修一下构建失败');
   assert.equal(noDb.titleSource, 'fallback');
+});
+
+test('a garbled transcript summary title falls back to the first user message', () => {
+  const filePath = path.join(ROOT, '-Users-alice-work-project-x', 'session-1.jsonl');
+  const entry = cherryStudioEntryFromFile({
+    deviceId: 'macbook',
+    home: path.join('home', 'alice'),
+    env: {},
+    fsModule: memoryFs({ [filePath]: transcriptLines({ title: 'C:\\Users\\alice\\secret-proj || 分类\\ 表格' }) })
+  }, filePath, new Map());
+  assert.equal(entry.title, '帮我修一下构建失败');
+  assert.equal(entry.titleSource, 'fallback');
+});
+
+test('oversized transcripts read the tail slice for the summary title', () => {
+  // >4MB transcript forces the head+tail read path; the tail summary title and
+  // timestamp must surface, not the head bytes.
+  const filePath = path.join(ROOT, '-Users-alice-work-project-x', 'big.jsonl');
+  const tailTime = '2026-08-01T23:59:59.000Z';
+  const transcript = [
+    JSON.stringify({ type: 'user', timestamp: '2026-08-01T09:00:00.000Z', cwd: '/Users/alice/work/project-x', message: { role: 'user', content: '帮我修一下构建失败' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-08-01T09:00:05.000Z', message: { role: 'assistant', content: 'x'.repeat(5 * 1024 * 1024) } }),
+    JSON.stringify({ type: 'summary', timestamp: tailTime, summary: { title: 'Fix the build' } })
+  ].join('\n');
+  const entry = cherryStudioEntryFromFile({
+    deviceId: 'macbook', home: path.join('home', 'alice'), env: {}, fsModule: memoryFs({ [filePath]: transcript })
+  }, filePath, new Map());
+  assert.ok(entry);
+  assert.equal(entry.title, 'Fix the build'); // tail summary title
+  assert.equal(entry.lastUsedAt, tailTime);   // tail timestamp
+  assert.equal(entry.workspaceLabel, 'project-x'); // head cwd
 });

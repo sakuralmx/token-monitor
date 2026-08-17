@@ -2,10 +2,8 @@
 
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { hashKey } = require('./hashKey');
 const {
   titleFromFirstUserMessage,
-  sanitizeLabel,
   buildCatalogEntry,
   workspaceKeyFromPath,
   workspaceLabelFromPath
@@ -153,10 +151,14 @@ function decompressViaCli(command, bytes, deps) {
   const fsModule = deps.fsModule || require('node:fs');
   const osModule = deps.osModule || require('node:os');
   const tempFile = path.join(osModule.tmpdir(), `dsh-session-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.zst`);
-  fsModule.writeFileSync(tempFile, bytes);
+  // The temp file holds the whole conversation; keep it private to this user.
+  fsModule.writeFileSync(tempFile, bytes, { mode: 0o600 });
   try {
-    // `zstd -d` decodes the whole concatenated-frame stream natively.
-    const result = spawnSync(command, ['-d', '-c', tempFile], { timeout: 10_000, maxBuffer: MAX_SESSION_BYTES * 2 });
+    // `zstd -d` decodes the whole concatenated-frame stream natively. The input
+    // is bounded by MAX_SESSION_BYTES; give stdout headroom to match the zlib
+    // backend (which has no decode-size cap) rather than silently dropping a
+    // legal session that decompresses past a small buffer.
+    const result = spawnSync(command, ['-d', '-c', tempFile], { timeout: 10_000, maxBuffer: MAX_SESSION_BYTES * 8 });
     if (result.status !== 0) return null;
     return result.stdout;
   } finally {
@@ -177,21 +179,6 @@ function decompressZstd(bytes, deps = {}) {
     try { return decompressViaCli(backend.command, bytes, deps); } catch (_) { return null; }
   }
   return null;
-}
-
-// --- workspace helpers ---------------------------------------------------------
-
-// Stable, privacy-safe fallback identity from the flattened workspace dir name.
-// Kept only for sessions whose header has no `cwd`; the primary path derives the
-// workspace from the exact header `cwd` (see dshEntryFromDir).
-function workspaceIdentityFromDirName(dirName) {
-  const raw = String(dirName || '').trim();
-  if (!raw || raw === '_no-cwd') return { workspaceKey: '', workspaceLabel: '' };
-  const label = raw.replace(/^--/, '').replace(/--$/, '') || raw;
-  return {
-    workspaceKey: hashKey('dsh-workspace', raw),
-    workspaceLabel: sanitizeLabel(label)
-  };
 }
 
 // --- entry parsing -------------------------------------------------------------
@@ -369,19 +356,16 @@ function dshEntryFromDir(deps, workspaceDirName, sessionDirPath) {
   const sessionId = header && header.id ? header.id : path.basename(sessionDirPath);
   if (!sessionId) return null;
 
-  // Workspace from the exact header `cwd`; fall back to the dir-name identity
-  // only when the session has no recorded working directory.
+  // Workspace from the exact header `cwd` only. The flattened directory name is
+  // a lossy encoding (a `-` is both a separator and a literal dash) that can
+  // carry the drive letter / username / hierarchy, so it is never used for the
+  // key or label — a session without a recorded cwd has no workspace.
   const cwd = header && typeof header.cwd === 'string' ? header.cwd.trim() : '';
   let workspaceKey = '';
   let workspaceLabel = '';
   if (cwd) {
     workspaceKey = workspaceKeyFromPath(cwd, { platform: deps.platform });
     workspaceLabel = workspaceLabelFromPath(cwd, { platform: deps.platform });
-  }
-  if (!workspaceKey && !workspaceLabel) {
-    const fallback = workspaceIdentityFromDirName(workspaceDirName);
-    workspaceKey = fallback.workspaceKey;
-    workspaceLabel = fallback.workspaceLabel;
   }
 
   const loggedTitle = latestTitleOf(lines);
@@ -450,6 +434,5 @@ module.exports = {
   hasZstdMagic,
   resetBackendCache,
   scanDshSessions,
-  scanZstdFrames,
-  workspaceIdentityFromDirName
+  scanZstdFrames
 };

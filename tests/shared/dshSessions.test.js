@@ -13,8 +13,7 @@ const {
   hasZstdMagic,
   resetBackendCache,
   scanDshSessions,
-  scanZstdFrames,
-  workspaceIdentityFromDirName
+  scanZstdFrames
 } = require('../../src/shared/dshSessions');
 
 const hasBuiltinZstd = typeof zlib.zstdCompressSync === 'function';
@@ -306,16 +305,27 @@ test('oversized sessions are skipped (size boundary)', () => {
   resetBackendCache();
 });
 
-test('workspaceIdentityFromDirName is stable, labeled, and leaks no path', () => {
-  const a = workspaceIdentityFromDirName('--D-700_projects-token-monitor--');
-  const b = workspaceIdentityFromDirName('--D-700_projects-token-monitor--');
-  assert.deepEqual(a, b); // stable across reboots
-  assert.equal(a.workspaceLabel, 'D-700_projects-token-monitor');
-  assert.ok(a.workspaceKey.startsWith('sha256:'));
-  assert.ok(!a.workspaceKey.includes('alice'));
-  assert.ok(!a.workspaceKey.includes('D-700_projects'));
-  assert.deepEqual(workspaceIdentityFromDirName(''), { workspaceKey: '', workspaceLabel: '' });
-  assert.deepEqual(workspaceIdentityFromDirName('_no-cwd'), { workspaceKey: '', workspaceLabel: '' });
+test('a session without a header cwd has no workspace (no flattened-path label)', () => {
+  resetBackendCache();
+  // Header with no cwd → the entry must not invent a workspace label from the
+  // lossy flattened directory name (which could leak a drive letter / username).
+  const jsonl = [
+    JSON.stringify({ type: 'session', version: 0, id: SESSION_ID, createdAt: CREATED_AT }),
+    JSON.stringify({ type: 'user/message', seq: 0, time: FIRST_USER_TIME, data: { role: 'user', content: [{ type: 'text', text: '无工作区的会话' }], source: { kind: 'user' } } })
+  ].join('\n');
+  const deps = baseDeps({
+    fsModule: memoryFs({
+      [SESSION_ROOT]: null,
+      [WORKSPACE_PATH]: null,
+      [SESSION_DIR]: null,
+      [path.join(SESSION_DIR, 'session.jsonl')]: jsonl
+    })
+  });
+  const entry = scanDshSessions(deps).entries[0];
+  resetBackendCache();
+  assert.ok(entry);
+  assert.equal(entry.workspaceKey, '');
+  assert.equal(entry.workspaceLabel, '');
 });
 
 test('dshEntryFromDir returns null for missing or unreadable sessions', () => {

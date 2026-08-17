@@ -62,8 +62,20 @@ function sanitizeText(value, maxChars) {
   );
 }
 
+// A title is built from the user's own prompt, which may embed an absolute
+// path. Strip unambiguous Windows absolute-path spans (drive-letter and UNC)
+// before upload so no workspace path rides the wire — the workspace key/label
+// are sanitized separately, but a title must not re-leak them. POSIX paths are
+// deliberately left alone: `/` also opens URLs, fractions and prose, so a
+// scheme-agnostic redaction there would mangle real titles.
+function redactAbsolutePaths(value) {
+  return String(value || '')
+    .replace(/\b[A-Za-z]:[\\/][^\s"'<>|]*/g, '')
+    .replace(/\\\\[^\s"'<>|]+/g, '');
+}
+
 function sanitizeTitle(value) {
-  return sanitizeText(value, TITLE_MAX_CHARS);
+  return sanitizeText(redactAbsolutePaths(value), TITLE_MAX_CHARS);
 }
 
 function sanitizeLabel(value) {

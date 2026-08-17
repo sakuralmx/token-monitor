@@ -41,9 +41,10 @@ function memoryFs(files) {
       if (typeof value !== 'string') { const err = new Error(`ENOENT: ${p}`); err.code = 'ENOENT'; throw err; }
       return { path: p, value };
     },
-    readSync(fd, buffer, offset, length) {
+    readSync(fd, buffer, offset, length, position) {
       const bytes = Buffer.from(fd.value, 'utf8');
-      const copy = bytes.subarray(0, Math.min(length, bytes.length));
+      const start = position || 0;
+      const copy = bytes.subarray(start, Math.min(start + length, bytes.length));
       copy.copy(buffer, offset);
       return copy.length;
     },
@@ -257,4 +258,24 @@ test('reads the legacy flat info.total_tokens shape', () => {
   const fsModule = memoryFs({ [file]: transcript });
   const entry = codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule }, file);
   assert.deepEqual(entry.stats, { totalTokens: 2400 });
+});
+
+test('oversized rollouts read the tail slice (not just the head)', () => {
+  // >4MB transcript forces the head+tail read path. The tail must surface the
+  // late timestamp + token total; a position-ignoring fs would read head bytes
+  // as the tail and lose both.
+  const file = path.join('home', 'alice', '.codex', 'sessions', '2026', '08', '02', 'big.jsonl');
+  const tailTime = '2026-08-02T23:59:59.000Z';
+  const transcript = [
+    metaLine('/Users/alice/work/project-y'),
+    userLine('修复登录页的样式问题'),
+    JSON.stringify({ type: 'event_msg', timestamp: '2026-08-02T08:06:00.000Z', payload: { type: 'agent_message', message: 'x'.repeat(5 * 1024 * 1024) } }),
+    tokenLine(2400, tailTime)
+  ].join('\n');
+  const fsModule = memoryFs({ [file]: transcript });
+  const entry = codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule }, file);
+  assert.ok(entry);
+  assert.equal(entry.title, '修复登录页的样式问题'); // head slice
+  assert.equal(entry.lastUsedAt, tailTime);           // tail slice
+  assert.deepEqual(entry.stats, { totalTokens: 2400 }); // tail token_count
 });
