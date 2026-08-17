@@ -270,6 +270,7 @@ const {
   composeLocalSyncStats
 } = require('./syncDisplayStats');
 const { createSyncUploadScheduler, normalizeSyncUploadIntervalMs } = require('./syncUploadScheduler');
+const { normalizeSyncSnapshot: normalizeSyncQuotaSnapshot } = require('../shared/quotaTokenEstimate');
 const {
   classifySettingsChange,
   diagnosticConfigurationFromSettings,
@@ -2347,6 +2348,26 @@ function summaryWithArchivedClientUsage(summary) {
   return summaryWithArchivesApplied(summary, updateSessionUsageArchive(summary, now), now);
 }
 
+function summaryWithQuotaTokenEstimate(summary) {
+  const config = settings?.quotaTokenEstimate;
+  const calibration = config?.calibration;
+  const provider = (summary?.limits?.providers || []).find((entry) => (
+    entry?.provider === 'codex' && entry?.status === 'ok' && entry?.accountKey
+  ));
+  const updatedAt = calibration?.last?.at;
+  const snapshot = normalizeSyncQuotaSnapshot({
+    version: 1,
+    accountKey: provider?.accountKey,
+    updatedAt,
+    capacity: config?.capacity,
+    reservePercent: config?.reservePercent,
+    weights: config?.weights,
+    calibration
+  });
+  if (!snapshot) return summary;
+  return { ...summary, quotaTokenEstimate: snapshot };
+}
+
 function applyMacActivationPolicy(state = {}) {
   if (process.platform !== 'darwin') return;
   const mainWindowVisible = state.mainWindowVisible !== undefined
@@ -3382,6 +3403,7 @@ function startSyncCollector() {
         ...summary,
         syncUploadIntervalMs: syncUploadIntervalMs()
       };
+      Object.assign(visibleSummary, summaryWithQuotaTokenEstimate(visibleSummary));
       lastCollectedDevice = { ...visibleSummary, receivedAt: new Date().toISOString() };
       const displayStats = composeLocalSyncStats(latestHubStats, lastCollectedDevice);
       if (displayStats) {
@@ -3416,7 +3438,7 @@ function startHostCollector() {
   const sink = {
     enqueue(summary) {
       if (isExternalAgentActive()) { sessionUsageArchive = null; return; }
-      const visibleSummary = summary;
+      const visibleSummary = summaryWithQuotaTokenEstimate(summary);
       lastCollectedDevice = { ...visibleSummary, receivedAt: new Date().toISOString() };
       if (!embeddedHub) return;
       try {
@@ -3974,7 +3996,7 @@ function startLocalCollector() {
     progressive: true,
     onRecord: (summary, meta) => {
       const reason = meta.reason;
-      const visibleSummary = summary;
+      const visibleSummary = summaryWithQuotaTokenEstimate(summary);
       localDevice = { ...visibleSummary, receivedAt: new Date().toISOString() };
       lastCollectedDevice = localDevice;
       localStats = withHistoryPreview(aggregateDevices([localDevice], 0), [localDevice]);

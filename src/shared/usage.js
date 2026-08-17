@@ -9,6 +9,7 @@ const DISJOINT_REASONING_CLIENTS = new Set([REASONIX_CLIENT, 'dsh']);
 const { filterReasonixSyntheticSessions, isReasonixSyntheticSession } = require('./reasonixSessionGuard');
 const { canonicalProjectKey, deterministicProjectLabel } = require('./projectKey');
 const { normalizeSyncUploadIntervalMs, staleAfterMsForSyncUpload } = require('./syncUploadInterval');
+const { normalizeSyncSnapshot: normalizeQuotaTokenEstimate } = require('./quotaTokenEstimate');
 const TOKEN_KEYS = ['totalTokens', 'total_tokens', 'totalTokenCount', 'total_token_count', 'tokens', 'tokenCount', 'token_count'];
 // Additive components for a token total. `reasoning` is deliberately excluded for ordinary clients:
 // OpenAI/Codex report reasoning_output_tokens WITHIN output_tokens (tokscale's `output` already
@@ -859,6 +860,10 @@ function normalizeDeviceRecord(record) {
     if (omitted) normalized.periodProjectsOmitted = omitted;
   }
   if (hasOwn(record, 'syncUploadIntervalMs')) normalized.syncUploadIntervalMs = normalizeSyncUploadIntervalMs(record.syncUploadIntervalMs);
+  if (hasOwn(record, 'quotaTokenEstimate')) {
+    const estimate = normalizeQuotaTokenEstimate(record.quotaTokenEstimate);
+    if (estimate) normalized.quotaTokenEstimate = estimate;
+  }
   if (hasOwn(record, 'historyAvailable')) normalized.historyAvailable = record.historyAvailable === true;
   if (hasOwn(record, 'history')) {
     // An explicit null means History is disabled/unavailable. Preserve that
@@ -1074,6 +1079,9 @@ function mergeDeviceRecord(existing, incoming) {
     }
     if (!hasOwn(normalizedIncoming, 'syncUploadIntervalMs') && hasOwn(normalizedExisting, 'syncUploadIntervalMs')) {
       normalizedIncoming.syncUploadIntervalMs = normalizedExisting.syncUploadIntervalMs;
+    }
+    if (!hasOwn(normalizedIncoming, 'quotaTokenEstimate') && hasOwn(normalizedExisting, 'quotaTokenEstimate')) {
+      normalizedIncoming.quotaTokenEstimate = normalizedExisting.quotaTokenEstimate;
     }
     if (!hasOwn(normalizedIncoming, 'osVersion') && hasOwn(normalizedExisting, 'osVersion')) {
       normalizedIncoming.osVersion = normalizedExisting.osVersion;
@@ -1324,6 +1332,7 @@ function aggregateDevices(devices, staleAfterMs, nowMs = Date.now()) {
       ...(hasOwn(normalized, 'sessionDetailsOmitted') ? { sessionDetailsOmitted: normalized.sessionDetailsOmitted } : {}),
       ...(hasOwn(normalized, 'periodProjectsOmitted') ? { periodProjectsOmitted: normalized.periodProjectsOmitted } : {}),
       ...(hasOwn(normalized, 'syncUploadIntervalMs') ? { syncUploadIntervalMs: normalized.syncUploadIntervalMs } : {}),
+      ...(hasOwn(normalized, 'quotaTokenEstimate') ? { quotaTokenEstimate: normalized.quotaTokenEstimate } : {}),
       ...(hasOwn(normalized, 'periodWindows') ? { periodWindows: normalized.periodWindows } : {}),
       periods: normalized.periods,
       limits: normalized.limits

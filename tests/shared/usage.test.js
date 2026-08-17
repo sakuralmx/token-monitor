@@ -108,6 +108,25 @@ test('device records carry, expose, and preserve friendly OS metadata', () => {
   assert.equal(limitsOnly.osVersion, '26.0');
 });
 
+test('device records synchronize bounded Codex quota calibration and preserve it on limits-only updates', () => {
+  const observation = { remainingPercent: 75, localEquivalent: 1000, components: { input: 1000 }, at: '2026-05-27T00:00:00.000Z' };
+  const existing = recordWithLimits({ quotaTokenEstimate: {
+    accountKey: 'sha256:codex',
+    updatedAt: observation.at,
+    capacity: 1_000_000,
+    calibration: { first: observation, last: observation, observations: [observation], samples: [1_000_000] }
+  } });
+  const aggregate = aggregateDevices([existing], 0);
+  assert.equal(aggregate.devices[0].quotaTokenEstimate.accountKey, 'sha256:codex');
+  assert.equal(aggregate.devices[0].quotaTokenEstimate.capacity, 1_000_000);
+
+  const updated = mergeDeviceRecord(existing, {
+    deviceId: 'macbook', limitsOnly: true, updatedAt: '2026-05-27T00:01:00.000Z', limits: { providers: [] }
+  });
+  assert.equal(updated.quotaTokenEstimate.accountKey, 'sha256:codex');
+  assert.equal(updated.quotaTokenEstimate.calibration.observations.length, 1);
+});
+
 test('aggregateDevices does not let an orphaned stale device id override the current limits state', () => {
   const oldDevice = recordWithLimits({
     deviceId: 'old-device-id',

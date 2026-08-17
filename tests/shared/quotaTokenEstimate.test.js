@@ -3,6 +3,36 @@ const test = require('node:test'); const assert = require('node:assert/strict');
 test('separates cache and output weights', () => { assert.equal(quota.equivalentTokens({ clients: { codex: 1000 }, clientCacheReads: { codex: 600 }, clientCacheWrites: { codex: 100 }, clientOutputs: { codex: 50 } }), 735); });
 test('official percentage incorporates remote usage', () => { const r = quota.estimate({ provider: { windows: [{ kind: 'weekly', remainingPercent: 40 }] }, period: {}, capacity: 1e6, reservePercent: 5 }); assert.equal(r.optimisticRemaining, 400000); assert.equal(r.conservativeRemaining, 350000); });
 test('does not invent tokens without official percentage', () => { assert.equal(quota.estimate({ period: {}, capacity: 1e6 }).optimisticRemaining, null); });
+test('quota sync snapshots are bounded and strip unknown account data', () => {
+  const observations = Array.from({ length: 520 }, (_, index) => ({
+    remainingPercent: 100 - index % 100,
+    localEquivalent: index * 100,
+    components: { input: index, cacheRead: index * 2, secret: 'drop-me' },
+    at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    resetsAt: '2026-02-01T00:00:00.000Z',
+    cookie: 'drop-me'
+  }));
+  const snapshot = quota.normalizeSyncSnapshot({
+    accountKey: 'sha256:account',
+    updatedAt: observations.at(-1).at,
+    calibration: { samples: Array.from({ length: 300 }, (_, index) => index + 1), observations, first: observations[0], last: observations.at(-1) }
+  });
+  assert.equal(snapshot.calibration.observations.length, 512);
+  assert.equal(snapshot.calibration.samples.length, 256);
+  assert.deepEqual(Object.keys(snapshot.calibration.last.components), ['input', 'cacheRead', 'cacheWrite', 'output']);
+  assert.equal(snapshot.cookie, undefined);
+});
+test('quota sync follows the device that supplied the visible Codex limit across platform-specific account hashes', () => {
+  const snapshot = (accountKey, updatedAt) => ({
+    accountKey, updatedAt,
+    calibration: { observations: [{ remainingPercent: 50, localEquivalent: 100, components: {}, at: updatedAt }], last: { remainingPercent: 50, localEquivalent: 100, components: {}, at: updatedAt } }
+  });
+  const selected = quota.selectSyncSnapshot([
+    { deviceId: 'windows', quotaTokenEstimate: snapshot('sha256:path-hash', '2026-08-17T01:00:00Z') },
+    { deviceId: 'mac', quotaTokenEstimate: snapshot('sha256:keychain-hash', '2026-08-17T00:00:00Z') }
+  ], { accountKey: 'sha256:keychain-hash', sourceDeviceId: 'windows' });
+  assert.equal(selected.accountKey, 'sha256:path-hash');
+});
 test('projects raw token capacity using the current cache mix', () => {
   const result = quota.rawTokenProjection({ capacity: 1_000_000, remainingPercent: 60, reservePercent: 5, components: { input: 100, cacheRead: 900, cacheWrite: 0, output: 0 }, weights: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6 } });
   assert.equal(result.capacity, 5_263_158);

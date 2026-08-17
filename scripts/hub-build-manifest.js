@@ -16,6 +16,7 @@ const WORKER_SHARED_MODULES = Object.freeze([
   'limitProviders.js',
   'limits.js',
   'usage.js',
+  'quotaTokenEstimate.js',
   'history.js',
   'reasonixPaths.js',
   'reasonixSessionGuard.js',
