@@ -142,7 +142,10 @@
       // shard one continuous cycle into many fake groups (the 8/17 vs 8/14 split
       // the user observed). A percentage rebound above the small-noise threshold
       // is the only reliable reset marker; `resetsAt` stays on the summary purely
-      // for display.
+      // for display. Known trade-off: a partial top-up (not a full reset) also
+      // reads as a boundary here — without a reliable server reset timestamp the
+      // two are indistinguishable, and a false boundary only re-anchors that one
+      // cycle's anchor rather than corrupting the whole history.
       const boundary = previous && number(item.remainingPercent) > number(previous.remainingPercent) + 1;
       if (boundary) { groups.push(group); group = []; }
       group.push(item);
