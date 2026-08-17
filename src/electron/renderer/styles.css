@@ -3527,7 +3527,26 @@ html.is-windows .settings-panel select option {
   margin-top: 3px;
 }
 .shell.session-mode .row-label {
-  gap: 1px;
+  gap: 2px;
+}
+.shell.session-mode .row-workspace {
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid rgba(115, 189, 245, 0.32);
+  border-radius: 999px;
+  background: rgba(115, 189, 245, 0.08);
+  color: var(--blue);
+  font-size: 9px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell.session-mode .row-title {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
 }
 .shell.session-mode .row-subtitle {
   font-size: 10px;
@@ -4758,7 +4777,6 @@ html.is-windows .limit-live-badge {
 .view-icon-model { -webkit-mask-image: url("icons/views/model.svg"); mask-image: url("icons/views/model.svg"); }
 .view-icon-project { -webkit-mask-image: url("icons/views/project.svg"); mask-image: url("icons/views/project.svg"); }
 .view-icon-session { -webkit-mask-image: url("icons/views/session.svg"); mask-image: url("icons/views/session.svg"); }
-.view-icon-catalog { -webkit-mask-image: url("icons/views/session.svg"); mask-image: url("icons/views/session.svg"); }
 
 .row-icon-project { -webkit-mask-image: url("icons/views/project-row.svg"); mask-image: url("icons/views/project-row.svg"); }
 .view-icon-limits { -webkit-mask-image: url("icons/views/limits.svg"); mask-image: url("icons/views/limits.svg"); }

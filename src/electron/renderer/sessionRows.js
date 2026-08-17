@@ -124,16 +124,17 @@
       'Reasonix',
       session?.model
     );
-    const subtitleParts = [
+    const detailParts = [
       sessionActivityLabel(session, now),
       messageLabel(session)
     ].filter(Boolean);
     return {
       key: `session:${key}`,
       kind: 'session',
-      name: titleParts.join(' · '),
-      subtitle: subtitleParts.join(' · '),
-      detail: sessionIdLabel(session?.sessionId || key),
+      workspaceLabel: textValue(session?.projectLabel) || '—',
+      name: textValue(session?.title) || titleParts.join(' · '),
+      subtitle: titleParts.join(' · '),
+      detail: detailParts.join(' · '),
       value,
       tokenDataUnavailable,
       periodTokenDataUnavailable,
@@ -173,24 +174,19 @@
         // client+sessionId (the map key is a display/render key, not an identity).
         const catalog = catalogByKey ? catalogByKey.get(`${client}:${sessionId}`) : null;
         const catalogTitle = catalog?.title || '';
-        const catalogDescription = catalog?.description || '';
         const clientModel = titleParts.join(' · ');
         const name = catalogTitle || clientModel;
-        const subtitleParts = [
-          catalogDescription,
+        const detailParts = [
           archived ? archivedLabel : '',
           sessionActivityLabel(session, now),
           messageLabel(session)
         ].filter(Boolean);
-        const detailParts = [
-          catalogTitle ? clientModel : '',
-          sessionIdLabel(sessionId)
-        ].filter(Boolean);
         return {
           key: `session:${key}`,
           kind: 'session',
+          workspaceLabel: textValue(catalog?.workspaceLabel) || textValue(session?.projectLabel) || '—',
           name,
-          subtitle: subtitleParts.join(' · '),
+          subtitle: clientModel,
           detail: detailParts.join(' · '),
           value,
           cost: finiteNumber(session?.costUsd),

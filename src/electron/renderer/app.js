@@ -253,12 +253,11 @@ const VIEW_DISPLAY_OPTIONS = [
   { id: 'model', labelKey: 'views.model' },
   { id: 'project', labelKey: 'views.project' },
   { id: 'session', labelKey: 'views.session' },
-  { id: 'catalog', labelKey: 'views.catalog' },
   { id: 'limits', labelKey: 'views.limits' },
   { id: 'trends', labelKey: 'views.trends' }
 ];
 const viewPeriodValues = new Set(['today', 'month', 'week', 'last7', 'last30', 'allTime']);
-const viewBreakdownValues = new Set(['home', ...baseBreakdownOrder, 'catalog', 'status', 'limits', 'trends']);
+const viewBreakdownValues = new Set(['home', ...baseBreakdownOrder, 'status', 'limits', 'trends']);
 const HOME_MODULE_OPTIONS = [
   { id: 'limits', labelKey: 'home.limits', viewId: 'limits' },
   { id: 'tool', labelKey: 'home.tools', viewId: 'tool' },
@@ -301,6 +300,7 @@ let initialBreakdownPreferenceApplied = typeof initialViewState.breakdown === 's
 
 function normalizeInitialViewValue(value, allowed, fallback) {
   const raw = String(value || '').trim();
+  if (raw === 'catalog' && allowed === viewBreakdownValues) return 'session';
   return allowed.has(raw) ? raw : fallback;
 }
 
@@ -1674,13 +1674,16 @@ function rowWidth(value, max) {
 }
 
 function rowTemplate(rowData) {
-  const { key, name, platform, client, subtitle, detail, kind } = rowData;
+  const { key, name, platform, client, subtitle, detail, kind, workspaceLabel } = rowData;
   const row = document.createElement('div');
   row.dataset.key = key;
   if (platform) row.dataset.platform = platform;
   if (client) row.dataset.client = client;
   if (kind) row.dataset.kind = kind;
-  row.innerHTML = '<div class="row-head"><div class="row-name"><span class="row-mark"></span><div class="row-label"><span class="row-title"></span><span class="row-subtitle"></span><span class="row-detail"></span></div></div><div class="row-metrics"><div class="row-value"></div><div class="row-cost"></div></div></div><div class="row-body"><div class="bar"><div class="bar-fill"></div></div><div class="row-accordion"><div class="row-accordion-inner"></div></div></div>';
+  row.innerHTML = '<div class="row-head"><div class="row-name"><span class="row-mark"></span><div class="row-label"><span class="row-workspace"></span><span class="row-title"></span><span class="row-subtitle"></span><span class="row-detail"></span></div></div><div class="row-metrics"><div class="row-value"></div><div class="row-cost"></div></div></div><div class="row-body"><div class="bar"><div class="bar-fill"></div></div><div class="row-accordion"><div class="row-accordion-inner"></div></div></div>';
+  const workspaceEl = row.querySelector('.row-workspace');
+  workspaceEl.textContent = workspaceLabel || '';
+  workspaceEl.classList.toggle('hidden', !workspaceLabel);
   row.querySelector('.row-title').textContent = name;
   row.querySelector('.row-subtitle').textContent = subtitle || '';
   row.querySelector('.row-detail').textContent = detail || '';
@@ -1767,7 +1770,7 @@ function renderDeviceAccordion(accordionInner, deviceDetail) {
   accordionInner.dataset.signature = signature;
 }
 
-function updateRow(row, { name, subtitle, detail, value, cost, max, color, barBackground, accordionRows, deviceDetail, stale, platform, local, client, kind, cacheReadTokens, outputTokens, unclassifiedTokens, tokenDataUnavailable, sessionDetailAvailable }) {
+function updateRow(row, { name, subtitle, detail, workspaceLabel, value, cost, max, color, barBackground, accordionRows, deviceDetail, stale, platform, local, client, kind, cacheReadTokens, outputTokens, unclassifiedTokens, tokenDataUnavailable, sessionDetailAvailable }) {
   const width = rowWidth(value, max);
   const isExpanded = row.classList.contains('expanded');
   row.className = `row${kind ? ` ${kind}-row` : ''}${stale ? ' stale' : ''}${local ? ' local' : ''}`;
@@ -1798,6 +1801,9 @@ function updateRow(row, { name, subtitle, detail, value, cost, max, color, barBa
     mark.style.background = color;
   }
   row.querySelector('.row-title').textContent = name;
+  const workspaceEl = row.querySelector('.row-workspace');
+  workspaceEl.textContent = workspaceLabel || '';
+  workspaceEl.classList.toggle('hidden', !workspaceLabel);
   const subtitleEl = row.querySelector('.row-subtitle');
   subtitleEl.textContent = subtitle || '';
   subtitleEl.classList.toggle('hidden', !subtitle);
@@ -2131,7 +2137,7 @@ function catalogByKeyForSessionRows() {
     if (!entry || !entry.client || !entry.sessionId) continue;
     const key = `${entry.client}:${entry.sessionId}`;
     if (map.has(key)) continue;
-    map.set(key, { title: entry.title || '', description: entry.description || '' });
+    map.set(key, { title: entry.title || '', workspaceLabel: entry.workspaceLabel || '' });
   }
   return map;
 }
@@ -2187,10 +2193,9 @@ function effectiveViewDisplayOrderValue() {
 }
 
 function availableBreakdownIds() {
-  const order = ['home', baseBreakdownOrder[0], 'status', 'trends', 'catalog', ...baseBreakdownOrder.slice(1)];
+  const order = ['home', baseBreakdownOrder[0], 'status', 'trends', ...baseBreakdownOrder.slice(1)];
   let available = state.settings?.historyEnabled === false ? order.filter((id) => id !== 'trends') : order;
   if (state.settings?.projectsEnabled === false) available = available.filter((id) => id !== 'project');
-  if (state.settings?.catalogEnabled !== true) available = available.filter((id) => id !== 'catalog');
   return limitViewAvailable() ? [...available, 'limits'] : available;
 }
 
@@ -5619,7 +5624,7 @@ function turnNode(turn) {
 let contentReadySignaled = false;
 
 async function refreshCatalogView() {
-  if (state.catalogBusy || !els.catalogPanel) return;
+  if (state.catalogBusy) return;
   state.catalogBusy = true;
   try {
     // Prefer the hub's permanent catalog (shows other devices' sessions), fall
@@ -5630,8 +5635,7 @@ async function refreshCatalogView() {
     state.catalogEnabled = result.enabled !== false;
     state.catalogZstdAvailable = result.zstdAvailable !== false;
     state.catalogSource = result.source || 'local';
-    if (state.breakdown === 'catalog') renderCatalog();
-    else if (state.breakdown === 'session') render();
+    if (state.breakdown === 'session') render();
   } catch (_) {
     // View-level failure: leave the panel as-is; a later open retries.
   } finally {

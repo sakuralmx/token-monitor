@@ -37,7 +37,9 @@ test('renderer includes a dedicated service status panel and Status view option'
   assert.match(html, /<section id="serviceStatusPanel" class="service-status-panel hidden"><\/section>/);
   assert.match(html, /<script src="serviceStatusPresentation\.js"><\/script>/);
   assert.match(app, /\{ id: 'status', labelKey: 'views\.status' \}/);
-  assert.match(app, /viewBreakdownValues = new Set\(\['home', \.\.\.baseBreakdownOrder, 'catalog', 'status', 'limits', 'trends'\]\)/);
+  assert.match(app, /viewBreakdownValues = new Set\(\['home', \.\.\.baseBreakdownOrder, 'status', 'limits', 'trends'\]\)/);
+  assert.doesNotMatch(app, /\{ id: 'catalog', labelKey: 'views\.catalog' \}/);
+  assert.match(app, /raw === 'catalog'[\s\S]*return 'session'/);
   // Placeholders cover every provider so the rows render before the first fetch.
   assert.match(app, /label: 'Cursor'/);
   assert.match(app, /label: 'DeepSeek'/);

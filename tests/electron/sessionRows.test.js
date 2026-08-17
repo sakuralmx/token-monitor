@@ -57,11 +57,12 @@ test('session rows sort by latest activity and keep subtitles compact', () => {
     'session:codex:old'
   ]);
   assert.equal(rows[0].name, 'Codex · gpt-5.5');
-  assert.equal(rows[0].subtitle, '12:25 · 184 msgs');
-  assert.equal(rows[0].detail, '019e76fc-dddd-eeee-ffff-222222222222');
+  assert.equal(rows[0].workspaceLabel, '—');
+  assert.equal(rows[0].subtitle, 'Codex · gpt-5.5');
+  assert.equal(rows[0].detail, '12:25 · 184 msgs');
   assert.equal(rows[0].kind, 'session');
-  assert.equal(rows[1].subtitle, '12:07 · 1 msg');
-  assert.equal(rows[1].detail, '214c24d5-aaaa-bbbb-cccc-f87e');
+  assert.equal(rows[1].subtitle, 'Claude Code · claude-opus-4-8');
+  assert.equal(rows[1].detail, '12:07 · 1 msg');
 });
 
 test('a catalog match upgrades the row to a real title and first-line description', () => {
@@ -80,14 +81,15 @@ test('a catalog match upgrades the row to a real title and first-line descriptio
   }, {
     clientLabels,
     clientColors,
-    catalogByKey: new Map([[`codex:${sessionId}`, { title: '修复登录页', description: '帮我修一下构建失败' }]]),
+    catalogByKey: new Map([[`codex:${sessionId}`, { title: '修复登录页', workspaceLabel: 'token-monitor' }]]),
     now: new Date(2026, 4, 30, 12, 30)
   });
 
   assert.equal(rows.length, 1);
+  assert.equal(rows[0].workspaceLabel, 'token-monitor');
   assert.equal(rows[0].name, '修复登录页');
-  assert.equal(rows[0].subtitle, '帮我修一下构建失败 · 12:07 · 2 msgs');
-  assert.equal(rows[0].detail, 'Codex · gpt-5.5 · 019e76fc-aaaa-bbbb-cccc-111111111111');
+  assert.equal(rows[0].subtitle, 'Codex · gpt-5.5');
+  assert.equal(rows[0].detail, '12:07 · 2 msgs');
 });
 
 test('session rows fall back to month and day for older activity', () => {
@@ -107,8 +109,8 @@ test('session rows fall back to month and day for older activity', () => {
     now: new Date(2026, 4, 30, 12, 30)
   });
 
-  assert.equal(rows[0].subtitle, '05/29 23:08');
-  assert.equal(rows[0].detail, '214c24d5-aaaa-bbbb-cccc-f87e');
+  assert.equal(rows[0].subtitle, 'Claude Code · claude-opus-4-8');
+  assert.equal(rows[0].detail, '05/29 23:08');
 });
 
 test('Reasonix native rows reuse the common session schema without a native accordion', () => {
@@ -142,16 +144,17 @@ test('Reasonix native rows reuse the common session schema without a native acco
   const [row] = rows;
   assert.equal(row.kind, 'session');
   assert.equal(row.key, 'session:reasonix:ABC123');
-  assert.equal(row.name, 'Reasonix · deepseek/deepseek-v4-flash');
-  assert.equal(row.subtitle, '14:10 · 2 msgs');
-  assert.equal(row.detail, 'ABC123');
+  assert.equal(row.workspaceLabel, 'Qyen');
+  assert.equal(row.name, '测试一下');
+  assert.equal(row.subtitle, 'Reasonix · deepseek/deepseek-v4-flash');
+  assert.equal(row.detail, '14:10 · 2 msgs');
   assert.equal(row.value, 15382);
   assert.equal(row.cost, 0.25);
   assert.equal(row.sessionDetailAvailable, false);
   assert.equal(row.periodTokenDataUnavailable, false);
   assert.equal(row.client, 'reasonix');
   assert.equal(row.sortTime, new Date(localIso(2026, 8, 8, 14, 10)).getTime());
-  assert.doesNotMatch(row.name, /测试一下/);
+  assert.match(row.name, /测试一下/);
   assert.doesNotMatch(row.subtitle, /Qyen/);
   assert.doesNotMatch(row.detail, /reasonix:/);
   assert.equal(Object.hasOwn(row, 'nativeSessionBreakdown'), false);
@@ -174,7 +177,8 @@ test('Reasonix native rows reuse the common session schema without a native acco
     assert.ok(Object.hasOwn(ordinary, field), `ordinary row is missing ${field}`);
   }
   assert.equal(ordinary.name, 'Codex · gpt-5.6-luna');
-  assert.equal(ordinary.subtitle, '14:09 · 1 msg');
+  assert.equal(ordinary.subtitle, 'Codex · gpt-5.6-luna');
+  assert.equal(ordinary.detail, '14:09 · 1 msg');
 });
 
 test('Reasonix native rows omit turns from the compact subtitle when turns are unavailable', () => {
@@ -192,8 +196,9 @@ test('Reasonix native rows omit turns from the compact subtitle when turns are u
     now: new Date(2026, 7, 8, 14, 30)
   });
 
-  assert.equal(row.subtitle, '14:10');
-  assert.doesNotMatch(row.subtitle, /request|msg|turn/i);
+  assert.equal(row.subtitle, 'Reasonix · deepseek/deepseek-v4-flash');
+  assert.equal(row.detail, '14:10');
+  assert.doesNotMatch(row.detail, /request|msg|turn/i);
 });
 
 test('Reasonix native rows remain visible when official per-session tokens are unavailable', () => {
@@ -216,7 +221,8 @@ test('Reasonix native rows remain visible when official per-session tokens are u
   assert.equal(row.tokenDataUnavailable, true);
   assert.equal(row.periodTokenDataUnavailable, false);
   assert.equal(row.sessionDetailAvailable, false);
-  assert.equal(row.subtitle, '14:10 · 2 msgs');
+  assert.equal(row.subtitle, 'Reasonix · deepseek/deepseek-v4-flash');
+  assert.equal(row.detail, '14:10 · 2 msgs');
 });
 
 test('Reasonix native rows show cumulative totals for an unreliable bounded period', () => {
@@ -258,8 +264,8 @@ test('Reasonix native rows hide legacy stats paths while keeping the compact mes
     clientLabels: { reasonix: 'Reasonix' }
   });
 
-  assert.equal(row.subtitle, '6 msgs');
-  assert.equal(row.detail, '');
+  assert.equal(row.subtitle, 'Reasonix · deepseek-v4-flash');
+  assert.equal(row.detail, '6 msgs');
   assert.doesNotMatch(row.title, /reasonix-stats|\/Users\//i);
   assert.equal(sessionIdLabel(leakedPath), '');
 });
@@ -284,7 +290,8 @@ test('session rows label archived sessions without claiming the source was delet
   });
 
   assert.equal(rows[0].archived, true);
-  assert.equal(rows[0].subtitle, 'Archived · 12:07 · 3 msgs');
+  assert.equal(rows[0].subtitle, 'OpenCode · gpt-5');
+  assert.equal(rows[0].detail, 'Archived · 12:07 · 3 msgs');
   assert.equal(rows[0].title, 'OpenCode session deleted');
 });
 
@@ -314,7 +321,7 @@ test('session breakdown marks only periods affected by bounded sync detail', () 
   assert.equal(sessionBreakdownIncomplete({}, 'month'), false);
 });
 
-test('session layout keeps page chrome consistent and lets details wrap', () => {
+test('session layout uses a workspace tab and prominent title without exposing ids', () => {
   const styles = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'electron', 'renderer', 'styles.css'), 'utf8');
 
   assert.doesNotMatch(styles, /\.shell\.session-mode\s*\{[^}]*gap:/);
@@ -322,5 +329,7 @@ test('session layout keeps page chrome consistent and lets details wrap', () => 
   assert.doesNotMatch(styles, /\.shell\.session-mode \.total-number/);
   assert.doesNotMatch(styles, /\.shell\.session-mode \.cost/);
   assert.doesNotMatch(styles, /\.shell\.session-mode \.row-title\s*\{[^}]*white-space:\s*normal;/s);
+  assert.match(styles, /\.shell\.session-mode \.row-workspace\s*\{[^}]*border-radius:\s*999px;[^}]*text-overflow:\s*ellipsis;/s);
+  assert.match(styles, /\.shell\.session-mode \.row-title\s*\{[^}]*font-size:\s*13px;[^}]*font-weight:\s*650;/s);
   assert.match(styles, /\.shell\.session-mode \.row-detail\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
 });
