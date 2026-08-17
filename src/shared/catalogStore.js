@@ -20,7 +20,7 @@ const path = require('node:path');
 
 const { normalizeCatalogEntry, normalizeCatalogKey } = require('./sessionCatalog');
 
-const CATALOG_SCHEMA_VERSION = 1;
+const CATALOG_SCHEMA_VERSION = 2;
 
 let sqlite = null;
 try { sqlite = require('node:sqlite'); } catch (_) { sqlite = null; }
@@ -69,6 +69,7 @@ function normalizedToRow(normalized) {
     workspaceLabel: normalized.workspaceLabel,
     title: normalized.title,
     titleSource: normalized.titleSource === 'local' ? 'local' : 'fallback',
+    description: normalized.description || '',
     startedAt: normalized.startedAt || null,
     lastUsedAt: normalized.lastUsedAt,
     messageCount: Number.isInteger(normalized.messageCount) ? normalized.messageCount : 0,
@@ -91,6 +92,7 @@ function rowToEntry(row) {
     lastUsedAt: row.last_used_at,
     updatedAt: row.updated_at
   };
+  if (row.description) entry.description = row.description;
   if (row.started_at) entry.startedAt = row.started_at;
   if (row.message_count > 0) entry.messageCount = row.message_count;
   const stats = {};
@@ -125,6 +127,10 @@ function migrations() {
     CREATE INDEX catalog_entries_last_used ON catalog_entries (last_used_at DESC);
     CREATE INDEX catalog_entries_workspace ON catalog_entries (workspace_key);
     CREATE INDEX catalog_entries_updated ON catalog_entries (updated_at);
+    `,
+    // v2: add the first-line description.
+    `
+    ALTER TABLE catalog_entries ADD COLUMN description TEXT NOT NULL DEFAULT '';
     `
   ];
 }
@@ -187,14 +193,15 @@ function createCatalogStore({ file, logger = console } = {}) {
   const upsertStmt = db.prepare(`
     INSERT INTO catalog_entries
       (device_id, client, session_id, workspace_key, workspace_label, title,
-       title_source, started_at, last_used_at, message_count, total_tokens,
-       cost_usd, updated_at, deleted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       title_source, description, started_at, last_used_at, message_count,
+       total_tokens, cost_usd, updated_at, deleted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id, client, session_id) DO UPDATE SET
       workspace_key   = CASE WHEN ${winnerExpr} THEN excluded.workspace_key ELSE catalog_entries.workspace_key END,
       workspace_label = CASE WHEN ${winnerExpr} THEN excluded.workspace_label ELSE catalog_entries.workspace_label END,
       title           = CASE WHEN ${winnerExpr} THEN excluded.title ELSE catalog_entries.title END,
       title_source    = CASE WHEN ${winnerExpr} THEN excluded.title_source ELSE catalog_entries.title_source END,
+      description     = CASE WHEN ${winnerExpr} THEN excluded.description ELSE catalog_entries.description END,
       started_at      = CASE WHEN ${winnerExpr} THEN excluded.started_at ELSE catalog_entries.started_at END,
       last_used_at    = CASE WHEN ${winnerExpr} THEN excluded.last_used_at ELSE catalog_entries.last_used_at END,
       message_count   = CASE WHEN ${winnerExpr} THEN excluded.message_count ELSE catalog_entries.message_count END,
@@ -240,8 +247,8 @@ function createCatalogStore({ file, logger = console } = {}) {
         const row = normalizedToRow(normalized);
         upsertStmt.run(
           row.deviceId, row.client, row.sessionId, row.workspaceKey, row.workspaceLabel,
-          row.title, row.titleSource, row.startedAt, row.lastUsedAt, row.messageCount,
-          row.totalTokens, row.costUsd, row.updatedAt, row.deletedAt
+          row.title, row.titleSource, row.description, row.startedAt, row.lastUsedAt,
+          row.messageCount, row.totalTokens, row.costUsd, row.updatedAt, row.deletedAt
         );
         accepted += 1;
       }
@@ -354,9 +361,9 @@ function createCatalogStore({ file, logger = console } = {}) {
     const tombstoneStmt = db.prepare(`
       INSERT INTO catalog_entries
         (device_id, client, session_id, workspace_key, workspace_label, title,
-         title_source, started_at, last_used_at, message_count, total_tokens,
-         cost_usd, updated_at, deleted_at)
-      VALUES (?, ?, ?, '', '', '', 'fallback', NULL, ?, 0, 0, 0, ?, ?)
+         title_source, description, started_at, last_used_at, message_count,
+         total_tokens, cost_usd, updated_at, deleted_at)
+      VALUES (?, ?, ?, '', '', '', 'fallback', '', NULL, ?, 0, 0, 0, ?, ?)
       ON CONFLICT(device_id, client, session_id) DO UPDATE SET
         deleted_at = excluded.deleted_at
       WHERE (

@@ -157,6 +157,7 @@
     const stable = typeof options.stableColor === 'function' ? options.stableColor : stableColor;
     const palette = options.fallbackColors || fallbackColors;
     const archivedLabel = options.archivedLabel || 'Archived';
+    const catalogByKey = options.catalogByKey || null;
     const now = options.now || new Date();
     const rows = Object.entries(period?.sessions || {})
       .map(([key, session]) => {
@@ -166,17 +167,31 @@
         const { client, titleParts, clientLabel, modelLabel } = sessionTitleParts(session, labels);
         const sessionId = session?.sessionId || key;
         const archived = session?.archived === true || session?.deleted === true || session?.sourceDeleted === true;
+        // A session-catalog match upgrades the row label to the real title and
+        // shows the first line as the subtitle; the client·model text moves into
+        // the detail slot so the client is not lost. Match on the session's own
+        // client+sessionId (the map key is a display/render key, not an identity).
+        const catalog = catalogByKey ? catalogByKey.get(`${client}:${sessionId}`) : null;
+        const catalogTitle = catalog?.title || '';
+        const catalogDescription = catalog?.description || '';
+        const clientModel = titleParts.join(' · ');
+        const name = catalogTitle || clientModel;
         const subtitleParts = [
+          catalogDescription,
           archived ? archivedLabel : '',
           sessionActivityLabel(session, now),
           messageLabel(session)
         ].filter(Boolean);
+        const detailParts = [
+          catalogTitle ? clientModel : '',
+          sessionIdLabel(sessionId)
+        ].filter(Boolean);
         return {
           key: `session:${key}`,
           kind: 'session',
-          name: titleParts.join(' · '),
+          name,
           subtitle: subtitleParts.join(' · '),
-          detail: sessionIdLabel(sessionId),
+          detail: detailParts.join(' · '),
           value,
           cost: finiteNumber(session?.costUsd),
           color: colors[client] || (modelLabel && colorForModel ? colorForModel(modelLabel) : stable(key, palette)),

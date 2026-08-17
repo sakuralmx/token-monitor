@@ -13,6 +13,7 @@ const { hashKey } = require('./hashKey');
 
 const CATALOG_CLIENTS = Object.freeze(['cherrystudio', 'codex', 'dsh']);
 const TITLE_MAX_CHARS = 200;
+const DESCRIPTION_MAX_CHARS = 140;
 const LABEL_MAX_CHARS = 120;
 const SESSION_ID_MAX_CHARS = 200;
 const DEVICE_ID_MAX_CHARS = 100;
@@ -76,6 +77,12 @@ function redactAbsolutePaths(value) {
 
 function sanitizeTitle(value) {
   return sanitizeText(redactAbsolutePaths(value), TITLE_MAX_CHARS);
+}
+
+// The first-line description is the opening of the conversation (the first user
+// message). Same pipeline as the title — path redaction included — but shorter.
+function sanitizeDescription(value) {
+  return sanitizeText(redactAbsolutePaths(value), DESCRIPTION_MAX_CHARS);
 }
 
 function sanitizeLabel(value) {
@@ -200,6 +207,8 @@ function normalizeCatalogEntry(raw) {
     lastUsedAt: validIsoTimestamp(raw.lastUsedAt) || validIsoTimestamp(raw.startedAt),
     updatedAt: validIsoTimestamp(raw.updatedAt)
   };
+  const description = sanitizeDescription(raw.description);
+  if (description) entry.description = description;
   const startedAt = validIsoTimestamp(raw.startedAt);
   if (startedAt) entry.startedAt = startedAt;
   const messageCount = validNonNegativeInteger(raw.messageCount);
@@ -234,6 +243,7 @@ function buildCatalogEntry({
   workspaceLabel = '',
   title,
   titleSource = 'fallback',
+  description = '',
   startedAt,
   lastUsedAt,
   updatedAt,
@@ -249,6 +259,7 @@ function buildCatalogEntry({
     workspaceLabel: workspaceLabel || workspaceLabelFromPath(absolutePath),
     title,
     titleSource,
+    description,
     startedAt,
     lastUsedAt,
     updatedAt,
@@ -261,10 +272,12 @@ function buildCatalogEntry({
 module.exports = {
   CATALOG_CLIENTS,
   TITLE_MAX_CHARS,
+  DESCRIPTION_MAX_CHARS,
   LABEL_MAX_CHARS,
   buildCatalogEntry,
   normalizeCatalogEntry,
   normalizeCatalogKey,
+  sanitizeDescription,
   sanitizeLabel,
   sanitizeText,
   sanitizeTitle,

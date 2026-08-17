@@ -201,6 +201,8 @@ test('scanDshSessions reads the header cwd and the session/title event', () => {
   // Title comes from DSH's own session/title event, not the message text.
   assert.equal(entry.title, '审查提交');
   assert.equal(entry.titleSource, 'local');
+  // Description is the first real user message.
+  assert.equal(entry.description, '请审查这个提交');
   // Workspace derives from the exact header cwd, not the lossy dir name.
   assert.equal(entry.workspaceLabel, 'token-monitor');
   assert.ok(entry.workspaceKey.startsWith('sha256:'));

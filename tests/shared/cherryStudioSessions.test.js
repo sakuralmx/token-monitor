@@ -102,6 +102,7 @@ test('scanCherryStudioSessions reads V2 and legacy transcripts with local titles
   assert.equal(entry.sessionId, 'session-1');
   assert.equal(entry.title, 'Fix the build');
   assert.equal(entry.titleSource, 'local');
+  assert.equal(entry.description, '帮我修一下构建失败');
   assert.equal(entry.workspaceLabel, 'project-x');
   assert.ok(entry.workspaceKey.startsWith('sha256:'));
   assert.ok(!entry.workspaceKey.includes('alice'));

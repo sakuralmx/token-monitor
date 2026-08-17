@@ -296,6 +296,7 @@ function cherryStudioEntryFromFile(deps, filePath, titles) {
     absolutePath: cwd,
     title,
     titleSource: (dbTitle || summaryTitle) ? 'local' : 'fallback',
+    description: firstMessage,
     startedAt,
     lastUsedAt,
     updatedAt: lastUsedAt,

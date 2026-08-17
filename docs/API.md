@@ -452,6 +452,7 @@ Every catalog route carries the same normalized entry shape (primary key: `devic
   "workspaceLabel": "token-monitor",
   "title": "Fix the flaky test",
   "titleSource": "local",
+  "description": "Fix the build that flakes on CI",
   "startedAt": "2026-08-17T00:00:00.000Z",
   "lastUsedAt": "2026-08-17T01:00:00.000Z",
   "messageCount": 12,
@@ -469,6 +470,7 @@ Every catalog route carries the same normalized entry shape (primary key: `devic
 | `workspaceLabel` | Sanitized display name for the workspace (≤ 120 chars, control chars stripped, whitespace collapsed). May differ between devices but should be stable per device. |
 | `title` | Local title, truncated to 200 chars and sanitized (whitespace collapsed, control chars stripped, unpaired surrogates removed). Never raw conversation text — see `titleSource`. |
 | `titleSource` | `"local"` (the client's own title) or `"fallback"` (derived locally from the first valid user message). `"fallback"` titles may be rewritten by a later `"local"` write. |
+| `description` | Optional first-line description — the opening of the first valid user message, truncated to 140 chars and sanitized like `title`. A display aid, not a separate identity field; omitted when there is no user message. |
 | `startedAt` / `lastUsedAt` | ISO-8601 UTC timestamps; `lastUsedAt` is the sort key. |
 | `messageCount` | Optional non-negative integer. |
 | `stats` | Optional bounded usage summary (`totalTokens`, `costUsd`). |

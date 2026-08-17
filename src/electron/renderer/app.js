@@ -2123,6 +2123,19 @@ function modelRowsForPeriod(period) {
   return toolRowsForPeriod(period);
 }
 
+function catalogByKeyForSessionRows() {
+  // Join the session-catalog titles (title + first-line description) onto the
+  // usage-session rows by their shared `client:sessionId` key.
+  const map = new Map();
+  for (const entry of state.catalogEntries || []) {
+    if (!entry || !entry.client || !entry.sessionId) continue;
+    const key = `${entry.client}:${entry.sessionId}`;
+    if (map.has(key)) continue;
+    map.set(key, { title: entry.title || '', description: entry.description || '' });
+  }
+  return map;
+}
+
 function sessionRowsForPeriod(period) {
   const rows = sessionRowsApi.sessionRowsForPeriod(period, {
     clientLabels,
@@ -2131,6 +2144,7 @@ function sessionRowsForPeriod(period) {
     stableColor,
     fallbackColors: fallbackModelColors,
     archivedLabel: t('session.archived'),
+    catalogByKey: catalogByKeyForSessionRows(),
     nativeSessions: state.stats?.nativeSessions?.[state.period] || {}
   });
   if (rows.length > 0) return rows.sort((a, b) => b.sortTime - a.sortTime || b.value - a.value || b.cost - a.cost || a.name.localeCompare(b.name));
@@ -5616,7 +5630,8 @@ async function refreshCatalogView() {
     state.catalogEnabled = result.enabled !== false;
     state.catalogZstdAvailable = result.zstdAvailable !== false;
     state.catalogSource = result.source || 'local';
-    renderCatalog();
+    if (state.breakdown === 'catalog') renderCatalog();
+    else if (state.breakdown === 'session') render();
   } catch (_) {
     // View-level failure: leave the panel as-is; a later open retries.
   } finally {
@@ -7158,6 +7173,12 @@ function render() {
     els.trendsPanel.classList.add('hidden');
     els.catalogPanel?.classList.add('hidden');
     els.breakdown.classList.remove('hidden');
+    // The session view joins catalog titles onto the usage rows, so load the
+    // catalog once (lazily); refreshCatalogView re-renders the session rows when
+    // it lands.
+    if (state.breakdown === 'session' && state.catalogEntries === null) {
+      void refreshCatalogView();
+    }
     const rows = rowsForPeriod(period);
     let incompleteHint = '';
     if (state.breakdown === 'project' && projectRowsApi.projectBreakdownIncomplete(state.stats, state.period)) {

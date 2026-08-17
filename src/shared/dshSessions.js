@@ -384,6 +384,7 @@ function dshEntryFromDir(deps, workspaceDirName, sessionDirPath) {
     workspaceLabel,
     title,
     titleSource: loggedTitle ? 'local' : 'fallback',
+    description: firstMessage,
     startedAt,
     lastUsedAt,
     updatedAt: lastUsedAt,

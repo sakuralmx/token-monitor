@@ -49,13 +49,13 @@ function monotonicAfter(reference) {
   return new Date(ms).toISOString();
 }
 
-// Fingerprint of the conflict-relevant content: the title plus its source. The
-// hub's tie-break rule lets a `local` title upgrade a `fallback` title at the
-// same updatedAt, so a state that only records updatedAt would never upload that
-// upgrade. Carrying titleSource + title lets the delta also fire on same-time
-// title changes.
+// Fingerprint of the conflict-relevant content: the title plus its source and
+// the first-line description. The hub's tie-break rule lets a `local` title
+// upgrade a `fallback` title at the same updatedAt, so a state that only records
+// updatedAt would never upload that upgrade. Carrying titleSource + title +
+// description lets the delta also fire on same-time content changes.
 function contentFingerprint(entry) {
-  return `${entry.titleSource || 'fallback'}\u0000${entry.title || ''}`;
+  return `${entry.titleSource || 'fallback'}\u0000${entry.title || ''}\u0000${entry.description || ''}`;
 }
 
 // Which changed entries must be uploaded. `state` maps entryKey → { updatedAt,
@@ -79,7 +79,7 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
     // tie-break upgrades it), or any title/source change at the same timestamp.
     const isSameTimeChange = !isNew && !isNewer
       && updatedAt === previous.updatedAt
-      && (contentFingerprint(entry) !== `${previous.titleSource || 'fallback'}\u0000${previous.title || ''}`);
+      && (contentFingerprint(entry) !== contentFingerprint({ titleSource: previous.titleSource, title: previous.title, description: previous.description || '' }));
     // Explicit resurrection: the client previously soft-deleted this entry and it
     // has now reappeared. The hub's tombstone guard (catalogStore `winnerExpr`)
     // refuses any upsert whose updated_at is not strictly newer than deleted_at,
@@ -99,7 +99,8 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
     nextState[key] = {
       updatedAt: effectiveUpdatedAt || previous?.updatedAt || '',
       titleSource: entry.titleSource || 'fallback',
-      title: entry.title || ''
+      title: entry.title || '',
+      description: entry.description || ''
     };
   }
 
@@ -314,7 +315,8 @@ function mergeRemoteCatalog({ state = {}, entries = [] } = {}) {
       nextState[key] = {
         updatedAt: updatedAt || previous?.updatedAt || '',
         titleSource: entry.titleSource || 'fallback',
-        title: entry.title || ''
+        title: entry.title || '',
+        description: entry.description || ''
       };
     }
   }

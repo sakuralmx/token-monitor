@@ -126,6 +126,18 @@ test('sanitizeTitle redacts Windows absolute paths but leaves URLs and drive-let
   assert.equal(sanitizeTitle('install to E:\\001\\_software\\DeepSeek Harness then continue'), 'install to Harness then continue');
 });
 
+test('description is an optional first line, path-redacted and truncated', () => {
+  const entry = normalizeCatalogEntry(validRaw({
+    description: 'fix C:\\Users\\alice\\work\\x then continue'
+  }));
+  assert.equal(entry.description, 'fix then continue');
+  // Absent description is simply omitted.
+  assert.equal(normalizeCatalogEntry(validRaw()).description, undefined);
+  // Long description is truncated to DESCRIPTION_MAX_CHARS.
+  const long = normalizeCatalogEntry(validRaw({ description: 'x'.repeat(300) }));
+  assert.equal(long.description.length, 140);
+});
+
 test('workspace key is a stable one-way hash that never leaks the path', () => {
   const winPath = 'C:\\Users\\alice\\projects\\secret-project';
   const posixPath = '/Users/alice/projects/secret-project';

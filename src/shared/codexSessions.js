@@ -210,6 +210,7 @@ function codexEntryFromFile(deps, filePath) {
     absolutePath: cwd,
     title,
     titleSource: 'fallback',
+    description: firstMessage,
     startedAt,
     lastUsedAt,
     updatedAt: lastUsedAt,

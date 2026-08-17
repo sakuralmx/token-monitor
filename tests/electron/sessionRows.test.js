@@ -64,6 +64,32 @@ test('session rows sort by latest activity and keep subtitles compact', () => {
   assert.equal(rows[1].detail, '214c24d5-aaaa-bbbb-cccc-f87e');
 });
 
+test('a catalog match upgrades the row to a real title and first-line description', () => {
+  const sessionId = 'rollout-2026-05-30T09-47-36-019e76fc-aaaa-bbbb-cccc-111111111111';
+  const rows = sessionRowsForPeriod({
+    sessions: {
+      [`codex:${sessionId}`]: {
+        client: 'codex',
+        sessionId,
+        totalTokens: 100,
+        models: { 'gpt-5.5': 100 },
+        messageCount: 2,
+        lastUsedAt: localIso(2026, 5, 30, 12, 7)
+      }
+    }
+  }, {
+    clientLabels,
+    clientColors,
+    catalogByKey: new Map([[`codex:${sessionId}`, { title: '修复登录页', description: '帮我修一下构建失败' }]]),
+    now: new Date(2026, 4, 30, 12, 30)
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, '修复登录页');
+  assert.equal(rows[0].subtitle, '帮我修一下构建失败 · 12:07 · 2 msgs');
+  assert.equal(rows[0].detail, 'Codex · gpt-5.5 · 019e76fc-aaaa-bbbb-cccc-111111111111');
+});
+
 test('session rows fall back to month and day for older activity', () => {
   const rows = sessionRowsForPeriod({
     sessions: {

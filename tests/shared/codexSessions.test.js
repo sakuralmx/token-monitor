@@ -159,6 +159,7 @@ test('scanCodexSessions reads live and archived rollouts with workspace + title'
   assert.equal(liveEntry.client, 'codex');
   assert.equal(liveEntry.title, '修复登录页的样式问题');
   assert.equal(liveEntry.titleSource, 'fallback');
+  assert.equal(liveEntry.description, '修复登录页的样式问题');
   assert.equal(liveEntry.workspaceLabel, 'project-y');
   assert.ok(liveEntry.workspaceKey.startsWith('sha256:'));
   assert.ok(!liveEntry.workspaceKey.includes('alice'));

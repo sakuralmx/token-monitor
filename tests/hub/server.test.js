@@ -459,7 +459,7 @@ test('health advertises the catalog version when the store is live', async () =>
   try {
     const { port } = hub.server.address();
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
-    assert.equal(health.catalogVersion, 1);
+    assert.equal(health.catalogVersion, 2);
   } finally {
     await hub.stop();
     fs.rmSync(dataFile, { force: true });
