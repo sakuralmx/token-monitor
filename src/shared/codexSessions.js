@@ -98,6 +98,20 @@ function codexPromptText(raw) {
   return (idx >= 0 ? text.slice(idx + marker.length) : text).replace(/\s+/g, ' ').trim();
 }
 
+// Approval-review sessions open with the agent transcript injected as the first
+// user message ("The following is the Codex agent history …"), which is not the
+// user's prompt and must never become the fallback title. Same for system
+// reminders.
+const INJECTED_USER_MESSAGE_PREFIXES = [
+  'The following is the Codex agent history',
+  '<system-reminder',
+  '<system_reminder'
+];
+
+function isInjectedUserMessage(text) {
+  return INJECTED_USER_MESSAGE_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
 function firstUserMessageText(lines) {
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -108,6 +122,7 @@ function firstUserMessageText(lines) {
     const raw = payload.message || payload.text || '';
     const text = codexPromptText(raw);
     if (!text) continue;
+    if (isInjectedUserMessage(text)) continue;
     return text;
   }
   return '';
@@ -128,8 +143,9 @@ function messageCountOf(lines) {
 }
 
 function tokenStatsOf(lines) {
-  // The last token_count event carries the cumulative usage; total_tokens is the
-  // most stable headline across Codex versions.
+  // The last token_count event carries the cumulative usage. Codex Desktop nests
+  // the total under `info.total_token_usage.total_tokens`; older shapes put it
+  // flat on `info.total_tokens` / `totalTokens` / `token_count`.
   let totalTokens = 0;
   let costUsd = 0;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -140,7 +156,8 @@ function tokenStatsOf(lines) {
       const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : {};
       if (obj.type === 'event_msg' && payload.type === 'token_count') {
         const info = payload.info && typeof payload.info === 'object' ? payload.info : {};
-        const value = num(info.total_tokens || info.totalTokens || info.token_count);
+        const value = num(info.total_token_usage?.total_tokens)
+          || num(info.total_tokens) || num(info.totalTokens) || num(info.token_count);
         if (value > 0) { totalTokens = value; break; }
       }
     } catch (_) { /* skip */ }

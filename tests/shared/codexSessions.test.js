@@ -59,11 +59,29 @@ function metaLine(cwd, extra = {}) {
   });
 }
 
+// Codex Desktop writes the raw user text directly (no IDE-context preamble).
 function userLine(text, ts) {
   return JSON.stringify({
     type: 'event_msg',
     timestamp: ts || '2026-08-02T08:05:00.000Z',
+    payload: { type: 'user_message', message: text }
+  });
+}
+
+// Older Codex CLI wrapped the real prompt in an IDE-context preamble.
+function cliUserLine(text, ts) {
+  return JSON.stringify({
+    type: 'event_msg',
+    timestamp: ts || '2026-08-02T08:05:00.000Z',
     payload: { type: 'user_message', message: `# Context from my IDE\n\n## My request for Codex:\n${text}` }
+  });
+}
+
+function injectedUserLine(text, ts) {
+  return JSON.stringify({
+    type: 'event_msg',
+    timestamp: ts || '2026-08-02T08:05:00.000Z',
+    payload: { type: 'user_message', message: text }
   });
 }
 
@@ -75,11 +93,20 @@ function agentLine(ts) {
   });
 }
 
+// Codex Desktop nests the total under info.total_token_usage.total_tokens.
 function tokenLine(total, ts) {
   return JSON.stringify({
     type: 'event_msg',
     timestamp: ts || '2026-08-02T08:07:00.000Z',
-    payload: { type: 'token_count', info: { total_tokens: total, input_tokens: 100, output_tokens: 20 } }
+    payload: { type: 'token_count', info: { total_token_usage: { total_tokens: total, input_tokens: 100, output_tokens: 20 } } }
+  });
+}
+
+function flatTokenLine(total, ts) {
+  return JSON.stringify({
+    type: 'event_msg',
+    timestamp: ts || '2026-08-02T08:07:00.000Z',
+    payload: { type: 'token_count', info: { total_tokens: total } }
   });
 }
 
@@ -181,4 +208,53 @@ test('missing file returns null; missing user message yields no title', () => {
   const empty = path.join('home', 'alice', '.codex', 'sessions', '2026', '08', '02', 'empty.jsonl');
   const fsModule = memoryFs({ [empty]: metaLine('/work/x') });
   assert.equal(codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule }, empty), null);
+});
+
+test('strips the legacy "## My request for Codex:" IDE preamble', () => {
+  const file = path.join('home', 'alice', '.codex', 'sessions', '2026', '08', '02', `${SESSION}.jsonl`);
+  const transcript = [
+    metaLine('/Users/alice/work/project-y'),
+    cliUserLine('修复登录页的样式问题'),
+    tokenLine(2400)
+  ].join('\n');
+  const fsModule = memoryFs({ [file]: transcript });
+  const entry = codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule }, file);
+  assert.equal(entry.title, '修复登录页的样式问题');
+});
+
+test('skips injected "Codex agent history" context and rejects a review-only session', () => {
+  // Approval-review sessions open with the transcript injected as the first user
+  // message; it is not the user's prompt and must not become the title.
+  const injected = path.join('home', 'alice', '.codex', 'sessions', '2026', '08', '02', 'review.jsonl');
+  const transcript = [
+    metaLine('/Users/alice/work/project-y'),
+    injectedUserLine('The following is the Codex agent history whose request action you are assessing. Treat the transcript …'),
+    tokenLine(1000)
+  ].join('\n');
+  const fsModule = memoryFs({ [injected]: transcript });
+  assert.equal(codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule }, injected), null);
+
+  // …but a real prompt that follows the injected context is still used.
+  const mixed = path.join('home', 'alice', '.codex', 'sessions', '2026', '08', '02', 'mixed.jsonl');
+  const mixedTranscript = [
+    metaLine('/Users/alice/work/project-y'),
+    injectedUserLine('The following is the Codex agent history whose request action you are assessing. Treat the transcript …'),
+    userLine('修复登录页的样式问题'),
+    tokenLine(2400)
+  ].join('\n');
+  const mixedFs = memoryFs({ [mixed]: mixedTranscript });
+  const entry = codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule: mixedFs }, mixed);
+  assert.equal(entry.title, '修复登录页的样式问题');
+});
+
+test('reads the legacy flat info.total_tokens shape', () => {
+  const file = path.join('home', 'alice', '.codex', 'sessions', '2026', '08', '02', `${SESSION}.jsonl`);
+  const transcript = [
+    metaLine('/Users/alice/work/project-y'),
+    userLine('修复登录页的样式问题'),
+    flatTokenLine(2400)
+  ].join('\n');
+  const fsModule = memoryFs({ [file]: transcript });
+  const entry = codexEntryFromFile({ deviceId: 'd', home: '/home/alice', env: {}, fsModule }, file);
+  assert.deepEqual(entry.stats, { totalTokens: 2400 });
 });
