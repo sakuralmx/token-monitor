@@ -126,3 +126,37 @@ test('fits component weights and capacity from varied raw observations', () => {
   assert.ok(Math.abs(fit.weights.cacheRead - weights[1]) < 0.15);
   assert.ok(Math.abs(fit.weights.output - weights[3]) < 1);
 });
+
+test('a rolling resetsAt that advances every refresh does not shard one cycle', () => {
+  // A provider may report a relative/rolling reset timestamp that changes on
+  // every refresh (e.g. "resets 5h from now") while the remaining percentage is
+  // still monotonically decreasing within one continuous cycle. Each observation
+  // carries a different resetsAt value — the old strict `resetsAt !==` boundary
+  // check split this single cycle into four fake groups.
+  let rolling = 1;
+  const observations = [
+    { remainingPercent: 75, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: `t${rolling++}` },
+    { remainingPercent: 50, components: { input: 1000, cacheRead: 4000, cacheWrite: 0, output: 0 }, at: '2026-08-15T00:00:00Z', resetsAt: `t${rolling++}` },
+    { remainingPercent: 25, components: { input: 2000, cacheRead: 8000, cacheWrite: 0, output: 0 }, at: '2026-08-16T00:00:00Z', resetsAt: `t${rolling++}` },
+    { remainingPercent: 10, components: { input: 3000, cacheRead: 12000, cacheWrite: 0, output: 0 }, at: '2026-08-17T00:00:00Z', resetsAt: `t${rolling++}` }
+  ];
+  const cycles = quota.cycleSummaries(observations);
+  assert.equal(cycles.length, 1);
+  assert.equal(cycles[0].startRemainingPercent, 75);
+  assert.equal(cycles[0].endRemainingPercent, 10);
+  assert.equal(cycles[0].usedPercent, 65);
+  assert.equal(cycles[0].rawTokens, 15000);
+});
+
+test('a real percentage rebound still closes a cycle without a resetsAt change', () => {
+  const observations = [
+    { remainingPercent: 60, components: { input: 0, cacheRead: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: 'same' },
+    { remainingPercent: 30, components: { input: 1000, cacheRead: 4000 }, at: '2026-08-15T00:00:00Z', resetsAt: 'same' },
+    { remainingPercent: 90, components: { input: 1000, cacheRead: 4000 }, at: '2026-08-16T00:00:00Z', resetsAt: 'same' },
+    { remainingPercent: 80, components: { input: 1200, cacheRead: 4800 }, at: '2026-08-17T00:00:00Z', resetsAt: 'same' }
+  ];
+  const cycles = quota.cycleSummaries(observations);
+  assert.equal(cycles.length, 2);
+  assert.equal(cycles[0].endRemainingPercent, 30);
+  assert.equal(cycles[1].startRemainingPercent, 90);
+});

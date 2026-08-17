@@ -46,7 +46,9 @@
     for (let i = 1; i < list.length; i += 1) {
       const before = list[i - 1]; const after = list[i];
       if (!before?.components || !after?.components) continue;
-      if (before.resetsAt && after.resetsAt && before.resetsAt !== after.resetsAt) continue;
+      // Skip intervals that straddle a reset: a percentage rebound (server refill)
+      // is the reliable marker, not a resetsAt comparison (see cycleSummaries).
+      if (number(after.remainingPercent) > number(before.remainingPercent)) continue;
       const deltaPercent = number(before.remainingPercent) - number(after.remainingPercent);
       if (!(deltaPercent > 0)) continue;
       const rawDelta = Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => [key, number(after.components[key]) - number(before.components[key])]));
@@ -90,10 +92,15 @@
     let group = [];
     for (const item of list) {
       const previous = group[group.length - 1];
-      const boundary = previous && (
-        (previous.resetsAt && item.resetsAt && previous.resetsAt !== item.resetsAt)
-        || number(item.remainingPercent) > number(previous.remainingPercent) + 1
-      );
+      // A quota reset is signalled by the remaining percentage recovering (the
+      // server refills the window). `resetsAt` is deliberately NOT a boundary
+      // signal: several providers report a rolling/relative reset timestamp that
+      // advances on every refresh, so a strict `resetsAt !==` comparison would
+      // shard one continuous cycle into many fake groups (the 8/17 vs 8/14 split
+      // the user observed). A percentage rebound above the small-noise threshold
+      // is the only reliable reset marker; `resetsAt` stays on the summary purely
+      // for display.
+      const boundary = previous && number(item.remainingPercent) > number(previous.remainingPercent) + 1;
       if (boundary) { groups.push(group); group = []; }
       group.push(item);
     }
@@ -220,7 +227,12 @@
     const components = Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => [key, Math.max(0, number(rawComponents[key]))]));
     const current = { remainingPercent: pct, localEquivalent: local, components, at, resetsAt };
     const last = state.last;
-    const reset = last && ((last.resetsAt && resetsAt && last.resetsAt !== resetsAt) || pct > number(last.remainingPercent) + 1 || local < number(last.localEquivalent));
+    // A reset is signalled by a percentage rebound (server refill) or a local
+    // counter rollback (data archive rebuild). `resetsAt` is not a reset marker:
+    // rolling/relative reset timestamps advance on every refresh and would split
+    // one continuous cycle into many fake ones. See cycleSummaries for the longer
+    // rationale.
+    const reset = last && (pct > number(last.remainingPercent) + 1 || local < number(last.localEquivalent));
     if (!last) return { version: 3, last: current, first: current, samples: state.samples, observations: [...state.observations, current], changed: true, capacity: inferredCapacity(state.samples), hoursLeft: null, fit: null };
     if (reset) {
       const observations = [...state.observations, current];
@@ -252,7 +264,10 @@
     let remoteOnly = 0;
     for (let i = 1; i < observations.length; i += 1) {
       const before = observations[i - 1]; const after = observations[i];
-      if (before.resetsAt && after.resetsAt && before.resetsAt !== after.resetsAt) continue;
+      // Same rationale as cycleSummaries: a percentage rebound, not a resetsAt
+      // string comparison, marks a reset boundary across which intervals must
+      // not be differenced.
+      if (number(after.remainingPercent) > number(before.remainingPercent)) continue;
       const used = (number(before.remainingPercent) - number(after.remainingPercent)) / 100;
       if (!(used > 0)) continue;
       const x = ['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => Math.max(0, number(after.components?.[key]) - number(before.components?.[key])));
