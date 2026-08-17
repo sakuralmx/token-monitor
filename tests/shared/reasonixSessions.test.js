@@ -860,9 +860,10 @@ test('Reasonix native rows use the common session formatter and merge project at
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind, 'session');
   assert.equal(rows[0].key, 'session:reasonix:row-id');
-  assert.equal(rows[0].name, 'Reasonix · deepseek-v4');
-  assert.equal(rows[0].subtitle, '11:00');
-  assert.equal(rows[0].detail, 'row-id');
+  assert.equal(rows[0].workspaceLabel, 'Token Monitor');
+  assert.equal(rows[0].name, 'Build a dashboard');
+  assert.equal(rows[0].subtitle, 'Reasonix · deepseek-v4');
+  assert.equal(rows[0].detail, '11:00');
   assert.equal(Object.hasOwn(rows[0], 'nativeSessionBreakdown'), false);
   assert.equal(rows[0].cost, 0.25);
   assert.equal(rows[0].sessionDetailAvailable, false);

@@ -182,8 +182,8 @@ test('sync and renderer expose only native Reasonix and never serialize the stat
   assert.equal(rows[0].client, 'reasonix');
   assert.equal(rows[0].key, 'session:reasonix:branch-id');
   assert.equal(rows[0].name, 'Reasonix · deepseek/deepseek-v4-flash');
-  assert.equal(rows[0].subtitle, '14:29 · 2 msgs');
-  assert.equal(rows[0].detail, 'branch-id');
+  assert.equal(rows[0].subtitle, 'Reasonix · deepseek/deepseek-v4-flash');
+  assert.equal(rows[0].detail, '14:29 · 2 msgs');
   assert.deepEqual(rows.map((row) => row.client), ['reasonix']);
   assert.doesNotMatch(JSON.stringify(rows), /\/Users\/test/);
   assert.equal(sessionIdLabel(syntheticSession.sessionId), '');
