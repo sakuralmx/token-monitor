@@ -45,11 +45,29 @@
   - 验收标准：`cycleSummaries` 与 `advanceCalibration` 的边界判定不再被「相对/滚动 `resetsAt` 漂移」误切；
     同一周期内 `resetsAt` 秒级抖动不产生新周期；真正重置（`remainingPercent` 显著回升或 `resetsAt` 语义
     明确改变）仍能正确封存上一周期；新增回归测试覆盖 `resetsAt` 漂移场景。
-- [ ] QUOTA.META2 预估总容量算法修正
-  - 验收标准：任何一条容量结论都不低于「当前周期已观测消耗所隐含的容量」（现有 `observedCapacityFloor`
-    语义保留并强化）；缓存命中比例波动用多周期历史拟合出可靠参考比例（核心是「历史区间按当前 usage mix
-    归一化」后的加权容量，而非单周期瞬时 cache 比例），极端 cache 波动不压低容量；在官方削减/扩充额度时可
-    按当前周期消耗与比例回补调整；容量不再出现大面积「预估值 < 当前周期实际消耗」。
+- [ ] QUOTA.META2 预估总容量算法修正（重写，解决「周期长、样本少」）
+  - 背景（已确认瓶颈）：`advanceCalibration` 生成样本要求单次刷新 `deltaPct >= 0.2 && deltaLocal >= 100`，
+    `rawCapacityFromObservations` 要求跨相邻 observation 的 `deltaPercent > 0 && raw >= 100`——两者都以
+    「相邻两点」为采样单元。额度周期以月计、刷新频繁时，单点 percentage 下降常常 <0.2 或被 cache 波动吃掉，
+    大量观察被丢弃，样本长期不积累，容量停留在「学习中 / low confidence」或严重偏低。
+  - 核心思路（按数据来源分层，从「有」到「无」逐步兜底）：
+    1. **整周期全量回归**：不以相邻点为单位，而以「每个已封存周期的首尾两点」为回归样本——用
+       `(cycleStart.remainingPercent - cycleEnd.remainingPercent)` 作为消耗比、`(cycleEnd.components -
+       cycleStart.components)` 作为实耗，直接解出每个完整周期的容量，得到一个「每次重置才更新但极少受噪声
+       影响」的强锚点；周期越长越准。
+    2. **均值/分位数替换中位数**：把 `rawCapacityFromObservations` 的单次 `deltaPercent` 相邻采样改为
+       「当前周期内累计消耗 / 累计百分比」的**累计比值**（cumulative ratio），并把容量估计从「中位数」改为
+       「加权分位数 + 累计比值上限归并」，避免 cache 波动个别巨值/低值直接决定容量。
+    3. **硬下限兜底**：任何时刻 `capacity = max(容量估计, 当前周期已观测消耗 / 已消耗百分比 × 100)`，
+       保证「预估值永远 ≥ 当前周期实际消耗」；这是**绝对不变量**，先于一切拟合结论。
+    4. **官方变化回补**：当官方额度削减/扩充信号（如历史完整周期容量中位数与当前周期累计比值偏离超过阈值、
+       或 residuals 连续爬升）出现时，用「当前周期累计比值」作为近期容量主导项，向历史锚点做衰减融合，
+       而不是继续引用旧的整周期容量。
+    5. **数据不足时的诚实退化**：样本不足一个完整周期之前，只显示「当前周期累计消耗 + 已消耗百分比」的
+       线性外推（标注为「累计口径」），不再显示凭空的中位数容量；一旦有一个完整周期样本即切换为强锚点口径。
+  - 验收标准：任何容量结论 ≥ 当前周期实际消耗（硬约束）；有 ≥1 个完整周期样本后容量稳定收敛、不受单次
+    cache 波动大幅拉扯；无完整周期时显示累计口径外推而非「学习中」空转；官方削减/扩充时可回补调整；
+    新增测试覆盖「长周期稀疏样本」「单点 cache 巨值」「累计比 vs 相邻差」三类场景。
 - [ ] QUOTA.META3 精简 GPT 卡片
   - 验收标准：移除「多设备今日全部工具 Token」（首页已有）、「估算可信度」两处冗余项；文案去掉无意义
     废话（保留一句必要的周期/归一化说明，其余口号删除）；卡片视觉与指标顺序合理，中文文案经 i18n 或
@@ -72,13 +90,25 @@
   - 验收标准：OpenCode Go 的校准快照沿用现有 `quotaTokenEstimate` 同步字段（版本化、按 accountKey 选择、
     离线本地回退、limits-only 不覆盖），扩展字段满足 workers 可移植（无 Node 内建依赖），旧 Hub/客户端忽略
     未知字段仍工作。
+- [ ] QUOTA.CNY 人民币计价
+  - 背景：货币链路已完备（`currency.js` 支持 USD/TWD/HKD/CNY，内置 CNY=6.8 硬编码兜底；`exchangeRates.js`
+    经 @fawazahmed0/currency-api 拉实时汇率；renderer `formatCost()` 已按 `state.settings.currency` 转换，
+    设置页有币种选择器 + 汇率 auto/manual）。但 **GPT 额度趋势卡当前只显示 Token/百分比，无成本维度**；
+    OpenCode Go 的额度是美元口径（$12/$30/$60），本地 SQLite 的 `cost` 也是美元。
+  - 目标：GPT 卡与 OpenCode Go 卡的额度/容量/消耗相关金额一律用人民币呈现（`¥`），遵循用户「尽可能用
+    人民币」的偏好；涉及「美元 → 人民币」的换算复用现有 `currencyApi.formatCurrencyFromUsd(value, 'CNY')`。
+  - 验收标准：OpenCode Go 的 $12/$30/$60 三档额度在卡片上显示为 `¥` 等价金额（含换算，非原文美元）；
+    Go 每个模型「每月使用额度 / 每 1M token 价格」换算出的成本用人民币显示；GPT 卡若新增成本相关指标
+    同样走人民币；汇率来源沿用现有「覆盖 > 实时 > 内置 6.8」优先级，不新造汇率源；币种仍是全局设置
+    （默认 USD 不变，但本卡片默认优先人民币或以 `CNY` 呈现额度口径），需要时加一个该卡专属的币种说明，
+    且不破坏 `docs/API.md` 的 wire shape（金额仍以 USD 存储与同步，仅展示层转换）。
 - [ ] QUOTA.META5 回归、审查与交付
   - 验收标准：`npm run verify`（lint + test）通过；新增/更新测试覆盖周期切分、容量下限、OpenCode 换算、
-    卡片精简与 OpenCode 渲染；自审后打包安装本机版本并按 `AGENTS.md` 流程交付。
+    人民币计价、卡片精简与 OpenCode 渲染；自审后打包安装本机版本并按 `AGENTS.md` 流程交付。
 
 ### 实施顺序（建议）
 
-`QUOTA.META1（周期切分）→ QUOTA.META2（容量）→ QUOTA.META3（精简 GPT 卡）→ QUOTA.GO1（闭包泛化）→ QUOTA.GO2（OpenCode 换算）→ QUOTA.GO3（OpenCode 卡）→ QUOTA.GO4（同步）→ QUOTA.META5（验收）`
+`QUOTA.META1（周期切分）→ QUOTA.META2（容量）→ QUOTA.META3（精简 GPT 卡）→ QUOTA.GO1（闭包泛化）→ QUOTA.GO2（OpenCode 换算）→ QUOTA.CNY（人民币）→ QUOTA.GO3（OpenCode 卡）→ QUOTA.GO4（同步）→ QUOTA.META5（验收）`
 
 先修 GPT 卡的逻辑 bug（切分/容量），再精简 UI，最后做 OpenCode 的泛化与新增，保证每一步都独立可验证、
 每任务一个 commit（commit message 含任务 id）。
@@ -93,6 +123,9 @@
   无关，须在 Go 换算层单独建模。
 - 官方 Go limits 中 GPT 5.6 Luna / Qwen Plus / DeepSeek V4 等模型存在「≤/> token 阈值」与「Peak/Off-Peak」
   两档价，换算层至少支持「默认档 + 阈值/时段档」的解析，缺档时回退默认价。
+- 人民币计价：所有金额在**展示层**转换，存储/同步/API 仍用 USD（`costUsd`、`used/limit` 美元），避免破坏
+  wire shape 与 Worker 可移植性；CNY 汇率优先级沿用「用户覆盖 → 实时 → 内置 6.8」。OpenCode Go 的官方
+  美元额度（$12/$30/$60）与每模型价格表在 `opencodeGoQuota.js` 内以美元为单一事实源，展示时才转人民币。
 
 ## 已确定方案（历史迭代，长期保留）
 
