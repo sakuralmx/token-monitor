@@ -5,18 +5,16 @@
 ## 最近一轮
 
 - 时间：2026-08-17
-- 已完成：**异源审查返工轮**——针对异源团队复盘的 docs/review.md 8 项问题（3 严重 + 5 一般）逐项修复并验证：
-  - 服务端隐私再清洗：Hub `upsertEntries` 统一走 `normalizeCatalogEntry`，新增 `sanitizeWorkspaceKey`/`sanitizeWorkspaceLabel` 丢弃/收编 path-shaped workspace 字段，upsert 不再接受 `deletedAt`（#1）。
-  - 墓碑一致性：`winnerExpr` 增删除时间守卫（#2）；`invalidateKeys` 改 `INSERT…ON CONFLICT` 对未知 key 也落墓碑（#3）；invalidate 携带客户端事件时间 `deletedAt` 做条件更新 + 幂等（#5）；客户端 `computeCatalogDelta` 在删除后条目重现时用 `monotonicAfter` 制造严格更新事件时间做显式复活（#4）。
-  - 一致性与响应：抽取 `remoteEntryWins` 统一 `mergeRemoteCatalog` 的 tie 规则（#6）；invalidate 返回 `rejectedKeys` 且客户端只 checkpoint 已接受删除（#7）；nginx SSE location 加 `limit_conn`（#8）。
-  - `scripts/hub-build-manifest.js` 的 `NODE_RUNTIME_SOURCE_FILES` 增补 `sessionCatalog.js`、`hashKey.js`，`update:hub-build` 已重跑。
-- 验证方式：`npm run lint` 干净；`npm test` 3197 项中 3189 通过、7 跳过、1 失败（`macWidgetLaunchServicesRecovery` symlink EPERM，Windows 上改动前即失败）；Catalog 专项测试 70/70（新增 11 项乱序时序测试）。
+- 已完成：**收工验证与 Windows 安装**——在 Node 24.19.0 / npm 11.17.0 / Windows x64 上重新验证当前 `personal` 分支，生成并安装 Token Monitor 0.44.0。
+- 验证方式：`npm run verify` 的 lint 通过；测试 3202 项中 3194 通过、7 跳过、1 失败。唯一失败仍是 `tests/electron/macWidgetLaunchServicesRecovery.test.js` 在 Windows 创建 macOS 模拟 symlink 时返回 `EPERM`，与本轮 Catalog 改动及 Windows 运行路径无关。`npm run dist:win` 成功生成 NSIS 安装包与便携版，`npm run verify:release-artifact-names` 通过。
+- 安装结果：`Token-Monitor-Setup-0.44.0.exe /S` 退出码 0；安装文件版本为 `0.44.0.0`，路径为 `C:\Users\X\AppData\Local\Programs\token-monitor\Token Monitor.exe`；安装后启动并确认进程稳定运行。
+- 产物校验：安装包 SHA-256 `DDD1C2ECEA098DDBFAA1DCADFCD43654BFA893EF3927227FBF0CD47750C2ACA3`；便携版 SHA-256 `85F439DA0EE7CE8C438E2899235F1EFD20D77AF3909650F2E83A262797146CBE`。本地构建未配置发布证书，两份 EXE 均未签名，不宜作为对外正式发行件。
 - 已知问题 / 待办：
   - 部署到阿里云 ECS 的真实服务器验收（deploy/README.md 流程）尚未执行——需要真实服务器与 IP 证书。
   - 「两台设备错峰互看」真实设备验收未执行（无第二台设备）。
   - DSH zstd 解压在本机无后端时显示不可用（`zstdAvailable: false`）；装系统 zstd 或 fzstd 即可启用。
   - 本地 `main` 落后 `origin/main`（上游镜像待快进）；`personal` 尚未推送到 fork。
-- 给审查/下一轮的提示：修复结论已写入 docs/review.md 的「修复记录」表，8 项全部闭环。如需再次异源复核，重点看墓碑复活语义（严格更新事件时间）、服务端路径清洗、invalidate 幂等与 rejected checkpoint。
+- 给下一轮的提示：当前 Windows 安装可运行；若要正式分发，必须使用发布签名流程重新构建。真实 ECS 与双设备错峰同步仍是最终验收缺口。
 
 ## 个人化工作流
 
