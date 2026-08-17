@@ -10,7 +10,8 @@
 - 工作空间：增量同步指纹包含工作空间字段；Hub 允许同时间戳用非空工作空间补空值；会话合并保留信息更完整的用量行，并按设备区分同 ID 远端会话。
 - 上游版本：当前 `personal` 已包含官方 0.45.0，`package.json` 版本为 0.45.0。
 - 验证：聚焦测试 71/71、Hub build 13/13、ESLint 和 diff 检查通过。完整测试仅 Windows 无权创建 macOS symlink 夹具的既有 `EPERM` 失败。
-- 打包安装：待本轮提交后执行并补充产物路径、哈希与安装结果。
+- 提交：`da7e9d5 perf(sessions): move catalog scans off the UI thread`。
+- 打包安装：`dist/Token-Monitor-Setup-0.45.0.exe` SHA-256 `FB0B64CD680AC4D7469979DEB28AD810B298C8E56709C756CBB5B9CA19741C7E`；便携版 `dist/Token-Monitor-0.45.0.exe` SHA-256 `68818ABC734EA3322039F1B9A439992AD340979540847F94ABEC076EB79DA3AD`。产物命名验证通过，两份文件均为本地未签名构建。静默安装退出码 0，安装文件版本 0.45.0，重启后四个 Electron 进程均响应。
 
 ## 已知限制
 
