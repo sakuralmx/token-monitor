@@ -7,6 +7,8 @@ const test = require('node:test');
 const {
   cherryStudioEntryFromFile,
   cherryStudioRoots,
+  isCleanAutoTitle,
+  loadCherryStudioTitles,
   scanCherryStudioSessions
 } = require('../../src/shared/cherryStudioSessions');
 
@@ -14,6 +16,9 @@ const {
 function memoryFs(files) {
   const store = new Map(Object.entries(files));
   return {
+    existsSync(p) {
+      return store.has(p);
+    },
     statSync(p) {
       const value = store.get(p);
       if (value === undefined) { const err = new Error(`ENOENT: ${p}`); err.code = 'ENOENT'; throw err; }
@@ -162,4 +167,62 @@ test('cherryStudioEntryFromFile returns null for missing/unreadable files', () =
     deviceId: 'macbook', home: path.join('home', 'alice'), env: {}, fsModule: memoryFs({})
   }, filePath);
   assert.equal(entry, null);
+});
+
+test('isCleanAutoTitle accepts short clean titles and rejects garbled ones', () => {
+  assert.equal(isCleanAutoTitle('读取分析game文件内容'), true);
+  assert.equal(isCleanAutoTitle('中国历史策略对战游戏分析'), true);
+  assert.equal(isCleanAutoTitle(''), false);
+  assert.equal(isCleanAutoTitle('x'.repeat(41)), false);
+  assert.equal(isCleanAutoTitle('无标签大额支出完整清单(¥\\8898688 ||分类\\ \\ ---- \\ 运动健身\\ ¥37678'), false);
+  assert.equal(isCleanAutoTitle('js js bat bat'), false);
+});
+
+test('loadCherryStudioTitles keeps manually-edited and clean auto titles only', () => {
+  const rows = [
+    { sessionId: 's-manual', title: '用户手动改的长标题可以很长很长很长很长很长很长很长很长很长很长很长很长', edited: 1 },
+    { sessionId: 's-clean', title: '读取分析game文件内容', edited: 0 },
+    { sessionId: 's-garbled', title: '无标签大额支出完整清单(¥\\8898688 ||分类\\ \\ ---- \\ 运动健身\\ ¥37678', edited: 0 },
+    { sessionId: 's-long-auto', title: 'x'.repeat(80), edited: 0 },
+    { sessionId: 's-empty-title', title: '', edited: 0 }
+  ];
+  const fakeSqlite = {
+    DatabaseSync: class {
+      exec() {}
+      prepare() { return { all: () => rows }; }
+      close() {}
+    }
+  };
+  const titles = loadCherryStudioTitles({
+    sqlite: fakeSqlite,
+    home: path.join('home', 'alice'),
+    env: { APPDATA: path.join('home', 'alice', 'AppData', 'Roaming') },
+    fsModule: { existsSync: () => true }
+  });
+  assert.equal(titles.get('s-manual'), '用户手动改的长标题可以很长很长很长很长很长很长很长很长很长很长很长很长');
+  assert.equal(titles.get('s-clean'), '读取分析game文件内容');
+  assert.equal(titles.has('s-garbled'), false);
+  assert.equal(titles.has('s-long-auto'), false);
+  assert.equal(titles.has('s-empty-title'), false);
+});
+
+test('loadCherryStudioTitles returns an empty map when node:sqlite is unavailable', () => {
+  const titles = loadCherryStudioTitles({ sqlite: null, home: path.join('home', 'alice'), env: {} });
+  assert.equal(titles.size, 0);
+});
+
+test('a Cherry Studio DB title outranks the transcript fallback', () => {
+  const filePath = path.join(ROOT, '-Users-alice-work-project-x', 'session-1.jsonl');
+  const deps = {
+    deviceId: 'macbook',
+    home: path.join('home', 'alice'),
+    env: {},
+    fsModule: memoryFs({ [filePath]: transcriptLines() }) // no summary title
+  };
+  const withDb = cherryStudioEntryFromFile(deps, filePath, new Map([['session-1', 'DB 标题']]));
+  assert.equal(withDb.title, 'DB 标题');
+  assert.equal(withDb.titleSource, 'local');
+  const noDb = cherryStudioEntryFromFile(deps, filePath, new Map());
+  assert.equal(noDb.title, '帮我修一下构建失败');
+  assert.equal(noDb.titleSource, 'fallback');
 });

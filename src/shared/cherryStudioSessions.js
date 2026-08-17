@@ -6,6 +6,13 @@ const {
   buildCatalogEntry
 } = require('./sessionCatalog');
 
+// Cherry Studio's own session titles live in Data/cherrystudio.sqlite, not in
+// the Claude Code transcript (the transcript has no summary/title line). Read
+// them read-only with node:sqlite, feature-detected and best-effort so a locked
+// DB or older schema falls back to the transcript's first-user-message title.
+let sqlite = null;
+try { sqlite = require('node:sqlite'); } catch (_) { sqlite = null; }
+
 // Cherry Studio session adapter (plan T5).
 //
 // Cherry Studio (Electron desktop) keeps its sessions as standard Claude Code
@@ -42,6 +49,76 @@ function cherryStudioRoots({ home, env = process.env } = {}) {
     path.join(xdgConfig, 'CherryStudio', '.claude', 'projects')
   ];
   return Array.from(new Set(roots));
+}
+
+// Candidate Cherry Studio data directories (mirrors cherryStudioRoots).
+function cherryStudioDataDirs({ home, env = process.env } = {}) {
+  const homeDir = String(home || '');
+  if (!homeDir) return [];
+  const appData = String(env.APPDATA || '').trim() || path.join(homeDir, 'AppData', 'Roaming');
+  const xdgConfig = String(env.XDG_CONFIG_HOME || '').trim() || path.join(homeDir, '.config');
+  return Array.from(new Set([
+    path.join(appData, 'CherryStudio', 'Data'),
+    path.join(homeDir, 'Library', 'Application Support', 'CherryStudio', 'Data'),
+    path.join(xdgConfig, 'CherryStudio', 'Data')
+  ]));
+}
+
+// Cherry Studio auto-generates titles; real data shows many are garbled run-on
+// summaries with leaked markdown/table formatting. Adopt one only when it looks
+// like a real short title — anything else is skipped in favor of the transcript
+// fallback. A user-renamed title (is_name_manually_edited) always wins.
+function isCleanAutoTitle(title) {
+  if (!title) return false;
+  if (Array.from(title).length > 40) return false;
+  if (/[\\|]/.test(title)) return false;           // leaked path/table formatting
+  if (/[\uFFFD]/.test(title)) return false;        // replacement character
+  const words = title.split(/\s+/).filter(Boolean);
+  if (words.length >= 4) {
+    const unique = new Set(words);
+    if (unique.size * 2 <= words.length) return false; // "js js bat bat …"
+  }
+  return true;
+}
+
+// Build transcriptSessionId → title. The transcript file name is the Claude
+// Code session id, which Cherry Studio stores as agent_session_message
+// .runtime_resume_token; join to agent_session for the title and its
+// manually-edited flag. Returns an empty map when node:sqlite is unavailable,
+// the DB is missing/locked, or the schema differs — never throws.
+function loadCherryStudioTitles(deps = {}) {
+  const out = new Map();
+  const sqliteMod = deps.sqlite !== undefined ? deps.sqlite : sqlite;
+  if (!sqliteMod || !sqliteMod.DatabaseSync) return out;
+  const fsModule = deps.fsModule || require('node:fs');
+  const home = deps.home || (deps.osModule || require('node:os')).homedir();
+  for (const dataDir of cherryStudioDataDirs({ home, env: deps.env || process.env })) {
+    const dbPath = path.join(dataDir, 'cherrystudio.sqlite');
+    if (typeof fsModule.existsSync === 'function' && !fsModule.existsSync(dbPath)) continue;
+    let db;
+    try {
+      db = new sqliteMod.DatabaseSync(dbPath, { readOnly: true });
+      db.exec('PRAGMA busy_timeout = 250');
+      const rows = db.prepare(
+        `SELECT m.runtime_resume_token AS sessionId, s.name AS title, s.is_name_manually_edited AS edited
+         FROM agent_session_message m
+         JOIN agent_session s ON s.id = m.session_id
+         WHERE m.runtime_resume_token IS NOT NULL AND m.runtime_resume_token != ''`
+      ).all();
+      for (const row of rows) {
+        const sessionId = String(row.sessionId || '').trim();
+        const title = String(row.title || '').trim();
+        if (!sessionId || !title) continue;
+        if (Number(row.edited) === 1 || isCleanAutoTitle(title)) out.set(sessionId, title);
+      }
+      return out;
+    } catch (_) {
+      // Locked/unreadable/schema mismatch → keep whatever an earlier DB yielded.
+    } finally {
+      if (db) { try { db.close(); } catch (_) { /* noop */ } }
+    }
+  }
+  return out;
 }
 
 function num(value) {
@@ -185,8 +262,10 @@ function linesOf(text) {
 }
 
 // Scan one transcript file into a catalog entry. Returns null when the file is
-// unreadable, lacks an id, or has no usable title/time — never throws.
-function cherryStudioEntryFromFile(deps, filePath) {
+// unreadable, lacks an id, or has no usable title/time — never throws. `titles`
+// is the optional sessionId→title map from Cherry Studio's SQLite store; a DB
+// title (user-renamed, or a clean auto-title) outranks the transcript fallback.
+function cherryStudioEntryFromFile(deps, filePath, titles) {
   const fileName = path.basename(filePath);
   const sessionId = fileName.endsWith('.jsonl') ? fileName.slice(0, -'.jsonl'.length) : fileName.replace(/\.jsonl$/i, '');
   if (!sessionId) return null;
@@ -197,7 +276,9 @@ function cherryStudioEntryFromFile(deps, filePath) {
   const cwd = cwdOf(lines);
   const summary = summaryOf(lines);
   const firstMessage = firstUserMessageText(lines);
-  const title = String(summary?.title || '').trim() || titleFromFirstUserMessage(firstMessage);
+  const dbTitle = titles && titles.get(sessionId) ? String(titles.get(sessionId)).trim() : '';
+  const summaryTitle = String(summary?.title || '').trim();
+  const title = dbTitle || summaryTitle || titleFromFirstUserMessage(firstMessage);
   const startedAt = firstTimestampOf(lines);
   const lastUsedAt = lastTimestampOf(lines);
   const messageCount = userMessageCount(lines);
@@ -211,7 +292,7 @@ function cherryStudioEntryFromFile(deps, filePath) {
     sessionId,
     absolutePath: cwd,
     title,
-    titleSource: String(summary?.title || '').trim() ? 'local' : 'fallback',
+    titleSource: (dbTitle || summaryTitle) ? 'local' : 'fallback',
     startedAt,
     lastUsedAt,
     updatedAt: lastUsedAt,
@@ -228,6 +309,7 @@ function scanCherryStudioSessions(deps = {}) {
   const home = deps.home || (deps.osModule || require('node:os')).homedir();
   const fsModule = deps.fsModule || require('node:fs');
   const roots = cherryStudioRoots({ home, env: deps.env || process.env });
+  const titles = loadCherryStudioTitles(deps);
   const entries = [];
   for (const root of roots) {
     let projectDirs;
@@ -240,7 +322,7 @@ function scanCherryStudioSessions(deps = {}) {
       for (const file of files) {
         if (!file.isFile() || !file.name.toLowerCase().endsWith('.jsonl')) continue;
         try {
-          const entry = cherryStudioEntryFromFile(deps, path.join(projectPath, file.name));
+          const entry = cherryStudioEntryFromFile(deps, path.join(projectPath, file.name), titles);
           if (entry) entries.push(entry);
         } catch (_) { /* per-file isolation */ }
       }
@@ -251,7 +333,10 @@ function scanCherryStudioSessions(deps = {}) {
 
 module.exports = {
   MAX_TRANSCRIPT_BYTES,
+  cherryStudioDataDirs,
   cherryStudioEntryFromFile,
   cherryStudioRoots,
+  isCleanAutoTitle,
+  loadCherryStudioTitles,
   scanCherryStudioSessions
 };
