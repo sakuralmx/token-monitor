@@ -84,6 +84,19 @@ test('delta uploads same-time title text changes regardless of source', () => {
   assert.equal(changed.upserts.length, 1);
 });
 
+test('delta uploads workspace discovered after an earlier same-time scan', () => {
+  const first = computeCatalogDelta({
+    state: {},
+    entries: [entry({ workspaceKey: '', workspaceLabel: '', updatedAt: '2026-08-10T01:00:00.000Z' })]
+  });
+  const enriched = computeCatalogDelta({
+    state: first.nextState,
+    entries: [entry({ workspaceKey: 'sha256:proj', workspaceLabel: 'project-a', updatedAt: '2026-08-10T01:00:00.000Z' })]
+  });
+  assert.equal(enriched.upserts.length, 1);
+  assert.equal(enriched.upserts[0].workspaceLabel, 'project-a');
+});
+
 test('delta handles multiple clients/ids independently', () => {
   const entries = [
     entry({ sessionId: 'a' }),

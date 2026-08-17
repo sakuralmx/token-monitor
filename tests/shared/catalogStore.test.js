@@ -82,6 +82,20 @@ test('conflict tie: local titleSource beats fallback', { skip: !sqliteAvailable 
   }
 });
 
+test('conflict tie: a discovered workspace fills an existing blank', { skip: !sqliteAvailable }, () => {
+  const { store, dir } = makeStore();
+  try {
+    store.upsertEntries([entry({ workspaceKey: '', workspaceLabel: '', updatedAt: '2026-08-10T01:00:00.000Z' })]);
+    store.upsertEntries([entry({ workspaceKey: 'sha256:proj', workspaceLabel: 'project-a', updatedAt: '2026-08-10T01:00:00.000Z' })]);
+    const [row] = store.listSessions({}).entries;
+    assert.equal(row.workspaceKey, 'sha256:proj');
+    assert.equal(row.workspaceLabel, 'project-a');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('stale upsert cannot resurrect a deleted session (tombstone survives)', { skip: !sqliteAvailable }, () => {
   const { store, dir } = makeStore();
   try {

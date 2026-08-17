@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
+const { Worker } = require('node:worker_threads');
 const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, net, Notification, screen, session, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { defaultDeviceId, generateHubSecret, lanIpv4Addresses, loadDotEnv, pidFilePath, readJson, sharedDataDir } = require('../shared/config');
@@ -74,9 +75,6 @@ const { createHub } = require('../hub/server');
 const { probeHubBuild } = require('./hubBuildStatus');
 const { createCatalogSyncController } = require('./catalogSyncController');
 const { fetchHubCatalogEntries } = require('../shared/catalogSync');
-const { scanCherryStudioSessions } = require('../shared/cherryStudioSessions');
-const { scanCodexSessions } = require('../shared/codexSessions');
-const { scanDshSessions } = require('../shared/dshSessions');
 const { claudeWebCookie, deepseekToken, fetchClaudeLimits, normalizeClaudeWebCookieInput, normalizeLimitsRefreshMode, normalizeLimitsRefreshMs, parseBoolean, parseLimitProviders, runCodexLogin, minimaxToken, copilotToken, zaiToken, zaiRegion, zaiTeamToken, volcengineCredentials, qoderCookie, commandcodeCookie, kimiToken, kimiWebToken, ollamaSessionCookie } = require('../shared/limitCollector');
 const { fetchOllamaLimits, rememberOllamaValidation } = require('../shared/ollamaLimits');
 const { copilotLoginErrorMessage, isAllowedVerificationUrl, runCopilotDeviceFlowLogin } = require('../shared/copilotDeviceFlow');
@@ -4774,15 +4772,62 @@ function exitTrayMode() {
 // adapters, upload the incremental delta to the hub, and persist the advanced
 // sync state. Runs in client and host modes; local mode has no hub to talk to
 // and skips the upload (state stays pending).
-function catalogSyncAdapters() {
-  const home = os.homedir();
+let catalogScanPromise = null;
+let catalogScanPromiseKey = '';
+let catalogScanCache = null;
+let catalogScanCacheKey = '';
+let catalogScanCachedAt = 0;
+const CATALOG_SCAN_CACHE_MS = 30 * 1000;
+
+function scanLocalCatalogEntries() {
   const deviceId = settings?.deviceId || defaultDeviceId();
-  const deps = { deviceId, home, env: process.env, platform: process.platform };
-  return [
-    { scan: () => scanCherryStudioSessions(deps) },
-    { scan: () => scanCodexSessions(deps) },
-    { scan: () => scanDshSessions(deps) }
-  ];
+  const home = os.homedir();
+  const platform = process.platform;
+  const scanKey = `${deviceId}\u0000${home}\u0000${platform}`;
+  if (catalogScanCache && catalogScanCacheKey === scanKey && Date.now() - catalogScanCachedAt < CATALOG_SCAN_CACHE_MS) {
+    return Promise.resolve(catalogScanCache);
+  }
+  if (catalogScanPromise && catalogScanPromiseKey === scanKey) return catalogScanPromise;
+  catalogScanPromiseKey = scanKey;
+  catalogScanPromise = new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'catalogScanWorker.js'), {
+      workerData: {
+        deviceId,
+        home,
+        platform
+      }
+    });
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else {
+        catalogScanCache = result;
+        catalogScanCacheKey = scanKey;
+        catalogScanCachedAt = Date.now();
+        resolve(result);
+      }
+    };
+    worker.once('message', (message) => {
+      if (message?.ok) finish(null, message.result);
+      else finish(new Error(message?.error || 'catalog scan failed'));
+    });
+    worker.once('error', (error) => finish(error));
+    worker.once('exit', (code) => {
+      if (code !== 0) finish(new Error(`catalog scan worker exited with code ${code}`));
+    });
+  }).finally(() => {
+    if (catalogScanPromiseKey === scanKey) {
+      catalogScanPromise = null;
+      catalogScanPromiseKey = '';
+    }
+  });
+  return catalogScanPromise;
+}
+
+function catalogSyncAdapters() {
+  return [{ scan: () => scanLocalCatalogEntries() }];
 }
 
 function stopCatalogSync() {
@@ -4817,20 +4862,11 @@ function startCatalogSync() {
 // is in). The hub is the permanent store, but the UI reads the local adapters
 // so it works offline and in local mode; synced entries arrive from the hub via
 // the normal stats/stream path when configured.
-function getLocalCatalogEntries() {
+async function getLocalCatalogEntries() {
   if (settings?.catalogEnabled === false) return { entries: [], enabled: false };
-  const home = os.homedir();
-  const deviceId = settings?.deviceId || defaultDeviceId();
-  const deps = { deviceId, home, env: process.env, platform: process.platform };
-  let entries = [];
-  try { entries.push(...scanCherryStudioSessions(deps)); } catch (_) {}
-  try { entries.push(...scanCodexSessions(deps)); } catch (_) {}
-  let dshResult = { entries: [] };
-  try { dshResult = scanDshSessions(deps); } catch (_) {}
-  entries.push(...dshResult.entries);
-  entries.sort((left, right) => Date.parse(right?.lastUsedAt || right?.updatedAt || 0) - Date.parse(left?.lastUsedAt || left?.updatedAt || 0));
+  const { entries = [], zstdAvailable = true } = await scanLocalCatalogEntries();
   const hasMore = entries.length > 200;
-  return { entries: entries.slice(0, 200), enabled: true, zstdAvailable: dshResult.zstdAvailable !== false, hasMore };
+  return { entries: entries.slice(0, 200), enabled: true, zstdAvailable, hasMore };
 }
 
 // Catalog view in client/host mode: read the *permanent* catalog from the hub
@@ -4840,12 +4876,12 @@ function getLocalCatalogEntries() {
 async function getHubCatalogEntries() {
   if (settings?.catalogEnabled === false) return { entries: [], enabled: false };
   const { url: hubUrl, secret } = effectiveHubConfig();
-  const local = getLocalCatalogEntries();
-  if (!hubUrl) return { ...local, source: 'local' };
+  if (!hubUrl) return { ...(await getLocalCatalogEntries()), source: 'local' };
   const remote = await fetchHubCatalogEntries({ fetchFn: fetch, baseUrl: hubUrl, secret });
   if (remote.source === 'hub') {
     return { entries: remote.entries, enabled: true, zstdAvailable: true, source: 'hub', hasMore: remote.hasMore === true };
   }
+  const local = await getLocalCatalogEntries();
   return { ...local, source: 'local', hubReason: remote.reason };
 }
 

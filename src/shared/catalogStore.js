@@ -171,7 +171,7 @@ function createCatalogStore({ file, logger = console } = {}) {
   // Whole-record winner rule. Every field — including workspace metadata and the
   // soft-delete tombstone — follows the same conflict rule as the title: the
   // incoming row wins when its updated_at is strictly newer, or when it ties on
-  // updated_at and is a `local` titleSource upgrading an existing `fallback`.
+  // updated_at and improves the title source or fills a blank workspace.
   // A tombstone additionally refuses any incoming row whose updated_at is not
   // strictly newer than deleted_at, so a stale re-upload (or an out-of-order
   // replay of an old copy) can never clear a delete. Explicit resurrection
@@ -181,8 +181,10 @@ function createCatalogStore({ file, logger = console } = {}) {
       excluded.updated_at > catalog_entries.updated_at
       OR (
         excluded.updated_at = catalog_entries.updated_at
-        AND excluded.title_source = 'local'
-        AND catalog_entries.title_source != 'local'
+        AND (
+          (excluded.title_source = 'local' AND catalog_entries.title_source != 'local')
+          OR (catalog_entries.workspace_label = '' AND excluded.workspace_label != '')
+        )
       )
     )
     AND (

@@ -3569,76 +3569,26 @@ html.is-windows .settings-panel select option {
   content: 'you';
 }
 .row.local.stale .row-name::after { display: none; }
-.shell.session-mode .breakdown {
-  gap: 7px;
-}
-.shell.session-mode .row {
-  gap: 5px;
-  padding-bottom: 8px;
-}
-.shell.session-mode .row-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(66px, max-content);
-  align-items: start;
-  gap: 8px;
-}
-.shell.session-mode .row-name {
-  align-items: start;
-  gap: 7px;
-}
-.shell.session-mode .row-icon {
-  width: 11px;
-  height: 11px;
-  margin-top: 2px;
-}
-.shell.session-mode .dot {
-  margin-top: 3px;
-}
-.shell.session-mode .row-label {
-  gap: 2px;
-}
 .shell.session-mode .row-workspace {
   justify-self: start;
   max-width: 100%;
   overflow: hidden;
-  padding: 2px 7px;
-  border: 1px solid rgba(115, 189, 245, 0.32);
-  border-radius: 999px;
-  background: rgba(115, 189, 245, 0.08);
-  color: var(--blue);
+  padding: 1px 5px;
+  border: 1px solid rgba(var(--line-rgb), 0.16);
+  border-radius: 5px;
+  color: var(--muted);
   font-size: 9px;
-  line-height: 1.15;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .shell.session-mode .row-title {
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.25;
-}
-.shell.session-mode .row-subtitle {
-  font-size: 10px;
-  line-height: 1.2;
+  font-weight: 600;
 }
 .shell.session-mode .row-detail {
-  font-size: 10px;
-  line-height: 1.2;
   white-space: normal;
   overflow-wrap: anywhere;
   text-overflow: clip;
-}
-.shell.session-mode .row-metrics {
-  min-width: 66px;
-}
-.shell.session-mode .row-value {
-  font-size: 12px;
-  line-height: 1.15;
-}
-.shell.session-mode .row-cost {
-  line-height: 1.1;
-}
-.shell.session-mode .bar {
-  height: 5px;
 }
 .limits-panel {
   position: relative;
@@ -5376,35 +5326,6 @@ html.is-windows .limit-live-badge {
 .status-provider-interval.hidden { display: none; }
 
 .trends-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; overflow: hidden; }
-.catalog-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; overflow: hidden; }
-.catalog-panel.hidden { display: none; }
-.catalog-toolbar { flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.catalog-filter {
-  border: 1px solid rgba(127, 127, 127, 0.35); border-radius: 10px; background: transparent; color: var(--muted);
-  font-size: 11px; padding: 3px 10px; cursor: pointer;
-}
-.catalog-filter:hover { border-color: rgba(115, 189, 245, 0.62); color: var(--blue); }
-.catalog-filter.active { border-color: rgba(115, 189, 245, 0.9); color: var(--blue); background: rgba(115, 189, 245, 0.08); }
-.catalog-count { margin-left: auto; font-size: 11px; opacity: 0.6; }
-.catalog-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.catalog-group {
-  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
-  border: none; background: transparent; color: var(--text); font-size: 12px;
-  padding: 6px 8px; border-radius: 6px; cursor: pointer;
-}
-.catalog-group:hover { background: rgba(var(--overlay-rgb), 0.05); }
-.catalog-group-disclosure { color: var(--muted); font-size: 10px; width: 12px; flex: none; }
-.catalog-group-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
-.catalog-group-count { flex: none; font-size: 10px; opacity: 0.55; border: 1px solid rgba(127,127,127,0.3); border-radius: 8px; padding: 0 6px; }
-.catalog-session {
-  display: flex; align-items: baseline; gap: 8px; padding: 3px 8px 3px 26px;
-  font-size: 11.5px; line-height: 1.45;
-}
-.catalog-session-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.catalog-session-meta { flex: none; display: flex; gap: 8px; align-items: baseline; }
-.catalog-session-client { font-size: 10px; opacity: 0.6; }
-.catalog-session-time { font-size: 10px; opacity: 0.45; }
-.catalog-empty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; opacity: 0.6; padding: 24px; }
 .trends-panel.hidden { display: none; }
 .trends-cap { flex: none; display: flex; align-items: center; justify-content: space-between; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.6; }
 .trends-open-hint { opacity: 0.75; cursor: pointer; font-size: 13px; }

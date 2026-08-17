@@ -125,6 +125,21 @@ test('a failing adapter is isolated and does not abort the cycle', async () => {
   assert.equal(report.upserted, 1);
 });
 
+test('an asynchronous scan adapter is awaited before delta upload', async () => {
+  let uploaded = 0;
+  const report = await runCatalogSync({
+    deviceId: 'macbook', state: {},
+    adapters: [{ async scan() { return [entry()]; } }],
+    baseUrl: 'https://hub.example',
+    fetchFn: async (_url, options) => {
+      uploaded += JSON.parse(options.body).entries?.length || 0;
+      return { ok: true, status: 200, async json() { return { ok: true, accepted: uploaded, rejected: 0 }; } };
+    }
+  });
+  assert.equal(report.scanned, 1);
+  assert.equal(uploaded, 1);
+});
+
 test('an adapter returning explicit deletes forwards them to the hub', async () => {
   let invalidateBody = null;
   const adapter = {

@@ -112,21 +112,29 @@ test('catalog-only sessions keep devices separate and use the shared card fields
     clientLabels,
     clientColors,
     catalogEntries,
+    catalogByKey: new Map([[`codex:${sessionId}`, {
+      deviceId: 'laptop', title: 'Remote session', workspaceLabel: 'remote-work'
+    }]]),
     now: new Date(2026, 7, 17, 12, 0)
   });
 
   assert.equal(rows.length, 2);
   assert.deepEqual(new Set(rows.map((row) => row.key)), new Set([
-    `catalog:desktop:codex:${sessionId}`,
-    `catalog:laptop:codex:${sessionId}`
+    `session:codex:${sessionId}`,
+    `catalog:desktop:codex:${sessionId}`
   ]));
-  assert.equal(rows[0].workspaceLabel, 'remote-work');
-  assert.equal(rows[0].name, 'Remote session');
-  assert.equal(rows[0].subtitle, 'Codex · —');
-  assert.equal(rows[0].detail, '11:00 · 3 msgs');
-  assert.equal(rows[0].value, 101);
-  assert.equal(rows[0].cost, 1.01);
-  assert.equal(rows[0].catalogOnly, true);
+  const usageRow = rows.find((row) => row.key === `session:codex:${sessionId}`);
+  assert.equal(usageRow.workspaceLabel, 'remote-work');
+  assert.equal(usageRow.name, 'Remote session');
+  assert.equal(usageRow.value, 999);
+  const otherDeviceRow = rows.find((row) => row.key === `catalog:desktop:codex:${sessionId}`);
+  assert.equal(otherDeviceRow.workspaceLabel, 'local-work');
+  assert.equal(otherDeviceRow.name, 'Local session');
+  assert.equal(otherDeviceRow.subtitle, 'Codex · —');
+  assert.equal(otherDeviceRow.detail, '10:00 · 2 msgs');
+  assert.equal(otherDeviceRow.value, 100);
+  assert.equal(otherDeviceRow.cost, 0.01);
+  assert.equal(otherDeviceRow.catalogOnly, true);
 });
 
 test('catalog sessions obey every right-side period selection before rendering', () => {
@@ -383,7 +391,8 @@ test('session layout uses a workspace tab and prominent title without exposing i
   assert.doesNotMatch(styles, /\.shell\.session-mode \.total-number/);
   assert.doesNotMatch(styles, /\.shell\.session-mode \.cost/);
   assert.doesNotMatch(styles, /\.shell\.session-mode \.row-title\s*\{[^}]*white-space:\s*normal;/s);
-  assert.match(styles, /\.shell\.session-mode \.row-workspace\s*\{[^}]*border-radius:\s*999px;[^}]*text-overflow:\s*ellipsis;/s);
-  assert.match(styles, /\.shell\.session-mode \.row-title\s*\{[^}]*font-size:\s*13px;[^}]*font-weight:\s*650;/s);
+  assert.match(styles, /\.shell\.session-mode \.row-workspace\s*\{[^}]*border-radius:\s*5px;[^}]*color:\s*var\(--muted\);[^}]*text-overflow:\s*ellipsis;/s);
+  assert.match(styles, /\.shell\.session-mode \.row-title\s*\{[^}]*font-weight:\s*600;/s);
+  assert.doesNotMatch(styles, /\.shell\.session-mode \.row-title\s*\{[^}]*font-size:/s);
   assert.match(styles, /\.shell\.session-mode \.row-detail\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
 });

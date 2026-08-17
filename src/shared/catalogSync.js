@@ -49,18 +49,17 @@ function monotonicAfter(reference) {
   return new Date(ms).toISOString();
 }
 
-// Fingerprint of the conflict-relevant content: the title plus its source and
-// the first-line description. The hub's tie-break rule lets a `local` title
-// upgrade a `fallback` title at the same updatedAt, so a state that only records
-// updatedAt would never upload that upgrade. Carrying titleSource + title +
-// description lets the delta also fire on same-time content changes.
+// Fingerprint of the conflict-relevant content: title metadata and workspace
+// metadata. The hub permits same-time enrichment (for example, a later scan
+// discovering a previously blank workspace), so updatedAt alone is insufficient.
 function contentFingerprint(entry) {
-  return `${entry.titleSource || 'fallback'}\u0000${entry.title || ''}\u0000${entry.description || ''}`;
+  return `${entry.titleSource || 'fallback'}\u0000${entry.title || ''}\u0000${entry.description || ''}`
+    + `\u0000${entry.workspaceKey || ''}\u0000${entry.workspaceLabel || ''}`;
 }
 
 // Which changed entries must be uploaded. `state` maps entryKey → { updatedAt,
 // deletedAt?, titleSource?, title? }; `entries` is the fresh scan. Returns the
-// entries to upsert (new, newer, or same-time title promotion/change), the keys
+// entries to upsert (new, newer, or same-time metadata enrichment/change), the keys
 // to invalidate (explicit deletes), and the next state.
 function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
   const nextState = { ...state };
@@ -75,11 +74,11 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
     const updatedAt = isoOf(entry.updatedAt) || isoOf(entry.lastUsedAt) || '';
     const isNew = !previous || !previous.updatedAt;
     const isNewer = !isNew && updatedAt && updatedAt > previous.updatedAt;
-    // Same-time promotion/change: a fallback title that becomes local (the hub
-    // tie-break upgrades it), or any title/source change at the same timestamp.
+    // Same-time promotion/change: title improvements and workspace enrichment
+    // must reach the hub even when the source log timestamp did not move.
     const isSameTimeChange = !isNew && !isNewer
       && updatedAt === previous.updatedAt
-      && (contentFingerprint(entry) !== contentFingerprint({ titleSource: previous.titleSource, title: previous.title, description: previous.description || '' }));
+      && (contentFingerprint(entry) !== contentFingerprint(previous));
     // Explicit resurrection: the client previously soft-deleted this entry and it
     // has now reappeared. The hub's tombstone guard (catalogStore `winnerExpr`)
     // refuses any upsert whose updated_at is not strictly newer than deleted_at,
@@ -100,7 +99,9 @@ function computeCatalogDelta({ state = {}, entries = [], deletes = [] } = {}) {
       updatedAt: effectiveUpdatedAt || previous?.updatedAt || '',
       titleSource: entry.titleSource || 'fallback',
       title: entry.title || '',
-      description: entry.description || ''
+      description: entry.description || '',
+      workspaceKey: entry.workspaceKey || '',
+      workspaceLabel: entry.workspaceLabel || ''
     };
   }
 
@@ -273,8 +274,11 @@ function remoteEntryWins(remote, local) {
   const localUpdated = local.updatedAt || '';
   const remoteSource = remote.titleSource === 'local' ? 'local' : 'fallback';
   const localSource = local.titleSource === 'local' ? 'local' : 'fallback';
+  const workspaceEnrichment = !local.workspaceLabel && Boolean(remote.workspaceLabel);
   const contentWin = remoteUpdated > localUpdated
-    || (remoteUpdated === localUpdated && remoteSource === 'local' && localSource !== 'local');
+    || (remoteUpdated === localUpdated && (
+      (remoteSource === 'local' && localSource !== 'local') || workspaceEnrichment
+    ));
   if (!contentWin) return false;
   if (local.deletedAt && !(remoteUpdated > local.deletedAt)) return false;
   return true;
@@ -308,13 +312,19 @@ function mergeRemoteCatalog({ state = {}, entries = [] } = {}) {
       }
       continue;
     }
-    if (remoteEntryWins({ updatedAt, titleSource: entry.titleSource }, previous)) {
+    if (remoteEntryWins({
+      updatedAt,
+      titleSource: entry.titleSource,
+      workspaceLabel: entry.workspaceLabel
+    }, previous)) {
       merged.push(entry);
       nextState[key] = {
         updatedAt: updatedAt || previous?.updatedAt || '',
         titleSource: entry.titleSource || 'fallback',
         title: entry.title || '',
-        description: entry.description || ''
+        description: entry.description || '',
+        workspaceKey: entry.workspaceKey || '',
+        workspaceLabel: entry.workspaceLabel || ''
       };
     }
   }

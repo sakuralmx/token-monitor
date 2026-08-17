@@ -200,8 +200,8 @@
     const archivedLabel = options.archivedLabel || 'Archived';
     const catalogByKey = options.catalogByKey || null;
     const catalogEntries = Array.isArray(options.catalogEntries) ? options.catalogEntries : [];
-    const catalogIdentities = new Set(catalogEntries.map((entry) => `${entry?.client || ''}:${entry?.sessionId || ''}`));
     const now = options.now || new Date();
+    const matchedCatalogKeys = new Set();
     const rows = Object.entries(period?.sessions || {})
       .map(([key, session]) => {
         if (isReasonixSyntheticSession(session, key)) return null;
@@ -209,13 +209,13 @@
         if (value <= 0) return null;
         const { client, titleParts, clientLabel, modelLabel } = sessionTitleParts(session, labels);
         const sessionId = session?.sessionId || key;
-        if (catalogIdentities.has(`${client}:${sessionId}`)) return null;
         const archived = session?.archived === true || session?.deleted === true || session?.sourceDeleted === true;
         // A session-catalog match upgrades the row label to the real title and
         // shows the first line as the subtitle; the client·model text moves into
         // the detail slot so the client is not lost. Match on the session's own
         // client+sessionId (the map key is a display/render key, not an identity).
         const catalog = catalogByKey ? catalogByKey.get(`${client}:${sessionId}`) : null;
+        if (catalog?.deviceId) matchedCatalogKeys.add(`${catalog.deviceId}:${client}:${sessionId}`);
         const catalogTitle = catalog?.title || '';
         const clientModel = titleParts.join(' · ');
         const name = catalogTitle || clientModel;
@@ -243,6 +243,8 @@
       })
       .filter(Boolean);
     for (const entry of catalogEntries) {
+      const catalogKey = `${entry?.deviceId || ''}:${entry?.client || ''}:${entry?.sessionId || ''}`;
+      if (matchedCatalogKeys.has(catalogKey)) continue;
       const row = catalogSessionRow(entry, options, now);
       if (row) rows.push(row);
     }

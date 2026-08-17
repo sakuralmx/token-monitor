@@ -46,7 +46,7 @@ async function runCatalogSync({
   for (const adapter of adapters || []) {
     if (typeof adapter.scan !== 'function') continue;
     try {
-      const result = adapter.scan();
+      const result = await adapter.scan();
       const list = Array.isArray(result) ? result : (result?.entries || []);
       entries.push(...list);
       if (result && !Array.isArray(result) && Array.isArray(result.deletes)) {
