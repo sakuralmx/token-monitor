@@ -5,6 +5,15 @@
 ## 最近一轮
 
 - 时间：2026-08-17
+- 已完成：删除独立“目录”视图，将 Catalog 标题与工作间元数据合并到“会话”视图。旧 `catalog` 视图偏好自动迁移到 `session`，底层元数据采集、Hub 同步与设置保持不变。
+- 会话结构：工作间名称使用胶囊 Tab；会话标题加粗放大；工具与模型、Token 数位于下一层；时间与消息数量、价格位于底层；不再显示会话 ID。缺失工作间以 `—` 回退，长名称省略。
+- 验证：聚焦测试 43/43、补充回归 44/44 通过，ESLint 通过。`npm run verify` 共 3219 项，3211 通过、7 跳过、1 失败；唯一失败仍是 Windows `EPERM` 导致 macOS 模拟 symlink 测试无法创建链接，与本轮改动无关。
+- 打包：`npm run dist:win` 生成 Token Monitor 0.44.0 安装包与便携版；`npm run verify:release-artifact-names` 通过。安装包 SHA-256 `9818717038F43752F82C845BA2D57CBFB53BA24162152AE1D1F3F04F3FFF5424`，便携版 SHA-256 `8F8425213CA716827D527C7FEE4F67DFBBBE1810B7B315753B051B50F7947F30`。两份本地构建均未签名。
+- 安装：`Token-Monitor-Setup-0.44.0.exe /S` 成功；安装路径 `C:\Users\X\AppData\Local\Programs\token-monitor\Token Monitor.exe`，文件版本 `0.44.0.0`，安装后进程稳定运行。
+
+## 上一轮
+
+- 时间：2026-08-17
 - 已完成：**收工验证与 Windows 安装**——在 Node 24.19.0 / npm 11.17.0 / Windows x64 上重新验证当前 `personal` 分支，生成并安装 Token Monitor 0.44.0。
 - 验证方式：`npm run verify` 的 lint 通过；测试 3202 项中 3194 通过、7 跳过、1 失败。唯一失败仍是 `tests/electron/macWidgetLaunchServicesRecovery.test.js` 在 Windows 创建 macOS 模拟 symlink 时返回 `EPERM`，与本轮 Catalog 改动及 Windows 运行路径无关。`npm run dist:win` 成功生成 NSIS 安装包与便携版，`npm run verify:release-artifact-names` 通过。
 - 安装结果：`Token-Monitor-Setup-0.44.0.exe /S` 退出码 0；安装文件版本为 `0.44.0.0`，路径为 `C:\Users\X\AppData\Local\Programs\token-monitor\Token Monitor.exe`；安装后启动并确认进程稳定运行。
