@@ -68,6 +68,11 @@ test('a null percentage is unknown, not a misleading full quota', () => {
   assert.equal(row.remainingRequests, null);
 });
 
+test('boolean percentages are rejected rather than coerced to 0 or 1', () => {
+  assert.equal(quota.clampPercent(true), null);
+  assert.equal(quota.clampPercent(false), null);
+});
+
 test('an env dollar-limit override scales request counts by the same factor', () => {
   // weekly limit flipped $30 → $60 doubles the effective request budget.
   const row = quota.estimateGoWindows({

@@ -68,9 +68,10 @@ function goLimits(env = {}) {
 }
 
 function clampPercent(value) {
-  // Reject null/empty/boolean explicitly: Number(null)===0 and Number('')===0
-  // would otherwise turn "unknown" into a false "0% used / full quota" reading.
-  if (value === null || value === undefined || value === '' || value === false) return null;
+  // Reject null/empty/boolean explicitly: Number(null)===0, Number('')===0 and
+  // Number(true)===1 would otherwise turn "unknown" into a false "full quota" (or
+  // "1% used") reading.
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return Math.max(0, Math.min(100, n));
