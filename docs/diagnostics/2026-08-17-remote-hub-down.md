@@ -1,8 +1,18 @@
 # 诊断记录：多设备同步连接失败（2026-08-17）
 
+> 状态：**已恢复**（2026-08-17 09:40 UTC，用户在阿里云控制台重启实例后）
+
 ## 结论
 
 **根因：阿里云 Hub 服务器（8.130.39.237）上的 HTTPS 服务已挂死（应用层无响应），所有设备均无法连接 → 多设备同步"始终连接失败"。这是服务器侧故障，不是 token-monitor 客户端代码或本机配置问题。**
+
+## 恢复验证（重启实例后）
+
+- `GET https://8.130.39.237/api/health` → 200，`{"ok":true,"role":"hub","runtime":"node-hub","hubBuild":{...}}`，`secretRequired:true`。
+- 用 `credentials.json` 的 `hub.clientSecret` 认证 → `/api/devices` 200，**2 台设备在线**：`xm`（本机）、`jyhy-liumingxi`，均持续上报（updatedAt 在检查时刻）。
+- `/api/stats` 聚合正常：`periods.today.totalTokens` 459,224,291 / `costUsd` 64.97；`/api/subscriptions` 共享列表完好（codex Plus 1 条）。
+- 客户端无需任何改动：widget 3 秒自动重连机制在服务器恢复后自动恢复上报与 SSE 流。
+- 注：health 无 `catalogVersion` 字段，服务器 Node 版本可能不支持 `node:sqlite`，会话目录（catalog）不可用，但不影响设备/用量/订阅同步。
 
 ## 配置事实（本机 Windows widget）
 
