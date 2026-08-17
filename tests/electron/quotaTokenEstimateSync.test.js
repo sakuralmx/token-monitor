@@ -21,3 +21,14 @@ test('quota rendering adopts the synced snapshot and labels aggregate usage as m
   assert.match(app, /多设备今日 Codex Token/);
   assert.doesNotMatch(app, /本机今日 Codex Token/);
 });
+
+test('quota card drops the redundant all-tools token, confidence, and filler copy', () => {
+  // Q3: the home page already shows today's all-tools token, confidence is
+  // meaningless to the user, and the trailing explanatory sentence was noise.
+  assert.doesNotMatch(app, /多设备今日全部工具 Token/);
+  assert.doesNotMatch(app, /估算可信度/);
+  assert.doesNotMatch(app, /历史容量样本/);
+  assert.doesNotMatch(app, /已覆盖额度周期/);
+  assert.doesNotMatch(app, /已采集时间点/);
+  assert.doesNotMatch(app, /估算使用所有已保存的历史区间/);
+});

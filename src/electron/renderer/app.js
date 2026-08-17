@@ -5265,11 +5265,8 @@ function quotaTokenEstimateCard(entries) {
   card.className = 'quota-token-card';
   const officialLabel = value.officialRemainingPercent === null ? '暂不可用' : `${value.officialRemainingPercent}%`;
   const hours = learned.hoursLeft === null || learned.hoursLeft === undefined ? '正在采集' : `${learned.hoursLeft} 小时`;
-  const rawCount = learned.observations?.length || estimateConfig.calibration?.observations?.length || 0;
   const todayCodex = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.today, 'codex');
-  const todayAll = Number(state.stats?.periods?.today?.totalTokens || 0);
   const rawModel = window.quotaTokenEstimate.rawCapacityFromObservations(learned.observations || estimateConfig.calibration?.observations || [], todayCodex, { weights: effectiveWeights });
-  const confidence = { high: '高', medium: '中', low: '低' }[rawModel?.confidence] || '采集中';
   const rawCapacityValue = rawModel?.capacity || 0;
   const remainingPercent = value.officialRemainingPercent;
   const reservePercent = Math.max(0, Math.min(100, Number(estimateConfig.reservePercent || 0)));
@@ -5279,15 +5276,16 @@ function quotaTokenEstimateCard(entries) {
   const rawRemaining = rawRemainingValue ? formatNumber(rawRemainingValue) : '学习中…';
   const rawConservative = rawConservativeValue ? formatNumber(rawConservativeValue) : '学习中…';
   const cacheMix = rawModel?.cacheHitPercent === null || rawModel?.cacheHitPercent === undefined ? '采集中' : `${rawModel.cacheHitPercent}%`;
-  const rawSampleCount = rawModel?.samples || 0;
-  const windowCount = rawModel?.windows || 0;
+  // Q2: when no full cycle has closed yet, the capacity is a cumulative-ratio
+  // extrapolation — label it so the number is not read as a settled estimate.
+  const capacityNote = rawModel?.sourceKind === 'cumulative' ? '（累计口径）' : '';
   const cycles = window.quotaTokenEstimate.cycleSummaries(learned.observations || estimateConfig.calibration?.observations || []);
   const cycleRows = cycles.slice(-6).reverse().map((cycle) => {
     const date = cycle.startedAt ? new Date(cycle.startedAt).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
     const status = cycle.current ? '当前周期' : cycle.partial ? '历史周期（部分）' : '历史周期';
     return `<div class="quota-cycle-row"><span>${date} · ${status}</span><b>${formatNumber(cycle.rawTokens)} Token</b><small>额度 ${cycle.startRemainingPercent}% → ${cycle.endRemainingPercent}% · 缓存 ${formatNumber(cycle.components.cacheRead)} · 未缓存 ${formatNumber(cycle.components.input)} · 输出 ${formatNumber(cycle.components.output)}</small></div>`;
   }).join('');
-  card.innerHTML = `<strong>GPT 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>保守剩余 Token <b>${rawConservative}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>历史容量样本 <b>${rawSampleCount}</b></span><span>已覆盖额度周期 <b>${windowCount}</b></span><span>预计还能使用 <b>${hours}</b></span><span>估算可信度 <b>${confidence}</b></span><span>已采集时间点 <b>${rawCount}</b></span><span>多设备今日 Codex Token <b>${formatNumber(todayCodex.total)}</b></span><span>多设备今日全部工具 Token <b>${formatNumber(todayAll)}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section><small>估算使用所有已保存的历史区间。额度重置时会自动封存上一周期，重置边界两侧不直接相减。历史区间会按当前缓存使用结构归一化。</small>`;
+  card.innerHTML = `<strong>GPT 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}${capacityNote}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>保守剩余 Token <b>${rawConservative}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>预计还能使用 <b>${hours}</b></span><span>多设备今日 Codex Token <b>${formatNumber(todayCodex.total)}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section>`;
   return card;
 }
 
