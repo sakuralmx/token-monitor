@@ -905,6 +905,9 @@ function compactMonthLabel(label) {
 }
 function currentCurrency() { return currencyApi.normalizeCurrency(state.settings?.currency); }
 function formatCost(value) { return currencyApi.formatCurrencyFromUsd(value, currentCurrency()); }
+// The quota cards present their dollar figures in CNY regardless of the global
+// currency setting (the user's stated preference), reusing the same rate chain.
+function formatQuotaCny(value) { return currencyApi.formatCurrencyFromUsd(value, 'CNY'); }
 function applyEffectiveCurrencyRates() {
   if (state.settings?.currencyRatesEffective) currencyApi.configureRates(state.settings.currencyRatesEffective);
 }
@@ -5228,7 +5231,7 @@ function renderThirdPartyAccountGroup(label, providers, color) {
 }
 
 let quotaCalibrationSaveKey = '';
-function quotaTokenEstimateCard(entries) {
+function quotaCodexEstimateCard(entries) {
   const config = state.settings?.quotaTokenEstimate || {};
   const provider = (entries.get('codex') || []).find((item) => item?.status === 'ok');
   if (!config.enabled || !provider || !window.quotaTokenEstimate) return null;
@@ -5289,6 +5292,60 @@ function quotaTokenEstimateCard(entries) {
   return card;
 }
 
+function quotaOpenCodeEstimateCard(entries) {
+  const config = state.settings?.quotaTokenEstimate || {};
+  if (!config.enabled || !window.opencodeGoQuota) return null;
+  // Only a Go subscription (dollar-metered, $12/$30/$60) gets this card; a
+  // Zen-only account has no Go windows and is left to the provider rows above.
+  const provider = (entries.get('opencode') || []).find((item) => item?.status === 'ok' && item?.accountLabel === 'Go');
+  if (!provider) return null;
+  const windows = Array.isArray(provider.windows) ? provider.windows : [];
+  // Pick the day's dominant model as the request-count reference. Go usage is
+  // metered per model; without a model we still show dollars but not requests.
+  const clientModels = state.stats?.periods?.today?.clientModels?.opencode || {};
+  const dominantModel = Object.entries(clientModels).sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))[0]?.[0] || '';
+  const goWindows = window.opencodeGoQuota.estimateGoWindows({ windows, modelId: dominantModel });
+  const todayOpenCode = Number(state.stats?.periods?.today?.clients?.opencode || 0);
+
+  const kindLabel = { session: '5 小时', weekly: '每周', monthly: '每月' };
+  const windowRows = goWindows.map((row) => {
+    const remainPct = row.usedPercent === null ? '—' : `${Math.max(0, 100 - row.usedPercent)}%`;
+    const money = row.remainingUsd === null ? '—' : formatQuotaCny(row.remainingUsd);
+    const requests = row.remainingRequests === null ? '' : ` · 约 ${formatNumber(row.remainingRequests)} 次`;
+    const label = kindLabel[row.kind] || row.kind || '—';
+    return `<div class="quota-cycle-row"><span>${label}</span><b>${money}${requests}</b><small>剩余额度 ${remainPct}</small></div>`;
+  }).join('');
+
+  const card = document.createElement('div');
+  card.className = 'quota-token-card';
+  card.innerHTML = `<strong>OpenCode Go 统计</strong><div><span>计费周期 <b>5 小时 / 每周 / 每月</b></span><span>周期数 <b>${goWindows.length}</b></span><span>多设备今日 OpenCode Token <b>${formatNumber(todayOpenCode)}</b></span></div><section class="quota-cycle-history"><strong>额度周期记录（单位：人民币）</strong>${windowRows || '<small>暂无额度数据</small>'}</section>`;
+  return card;
+}
+
+function quotaTokenEstimateCard(entries) {
+  const config = state.settings?.quotaTokenEstimate || {};
+  if (!config.enabled) return null;
+  const codexCard = quotaCodexEstimateCard(entries);
+  const openCodeCard = quotaOpenCodeEstimateCard(entries);
+  if (!codexCard && !openCodeCard) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'quota-token-cards';
+  if (codexCard) wrap.append(codexCard);
+  if (openCodeCard) wrap.append(openCodeCard);
+  return wrap;
+}
+
+// Cheap existence check used only to keep the render-cache signature accurate
+// (whether the quota card container will occupy one child slot), without running
+// the full card construction twice.
+function quotaTokenEstimatePresent(entries) {
+  const config = state.settings?.quotaTokenEstimate || {};
+  if (!config.enabled) return false;
+  const codexOk = (entries.get('codex') || []).some((item) => item?.status === 'ok');
+  const openCodeGo = (entries.get('opencode') || []).some((item) => item?.status === 'ok' && item?.accountLabel === 'Go');
+  return codexOk || openCodeGo;
+}
+
 function renderLimits() {
   if (!els.limitsPanel) return;
   const holdLimitDetailTooltipRender = limitDetailTooltipShouldHoldRender();
@@ -5312,6 +5369,7 @@ function renderLimits() {
       : [{ provider: id, status: 'disabled', windows: [] }];
     return [id, providerEntries];
   }));
+  const quotaCards = quotaTokenEstimatePresent(visibleProviderEntries);
   const renderSignature = JSON.stringify({
     locale: currentLocale(),
     minute: Math.floor(Date.now() / 60000),
@@ -5335,11 +5393,12 @@ function renderLimits() {
       state.codexSystemSwitchError || ''
     ],
     providerOrder: orderedProviders.map(({ id }) => id),
-    providers: [...visibleProviderEntries.entries()]
+    providers: [...visibleProviderEntries.entries()],
+    quotaCards
   });
   if (
     state.limitPanelRenderSignature === renderSignature
-    && els.limitsPanel.children.length === orderedProviders.length + (state.settings?.quotaTokenEstimate?.enabled ? 1 : 0)
+    && els.limitsPanel.children.length === orderedProviders.length + (quotaCards ? 1 : 0)
   ) {
     return;
   }

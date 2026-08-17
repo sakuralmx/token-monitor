@@ -32,3 +32,13 @@ test('quota card drops the redundant all-tools token, confidence, and filler cop
   assert.doesNotMatch(app, /已采集时间点/);
   assert.doesNotMatch(app, /估算使用所有已保存的历史区间/);
 });
+
+test('OpenCode Go renders a sibling quota card with cycle counts and CNY amounts', () => {
+  // G3: an OpenCode Go card sits beside the GPT card; G4/C1: amounts are CNY.
+  assert.match(app, /function quotaOpenCodeEstimateCard/);
+  assert.match(app, /OpenCode Go 统计/);
+  assert.match(app, /周期数/);
+  assert.match(app, /estimateGoWindows/);
+  assert.match(app, /formatQuotaCny/);
+  assert.match(app, /单位：人民币/);
+});

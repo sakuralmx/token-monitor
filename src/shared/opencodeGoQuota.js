@@ -13,6 +13,12 @@
 // escape hatch) because the API does not return them and the local DB records
 // only `cost` per message, not per model — there is no other source of truth.
 
+(function exposeOpenCodeGoQuota(root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.opencodeGoQuota = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function createOpenCodeGoQuotaApi() {
+
 const GO_LIMIT_USD = Object.freeze({ session: 12, weekly: 30, monthly: 60 });
 
 // Per-model pricing (USD per 1M tokens) + docs' typical per-request token mix.
@@ -110,13 +116,15 @@ function estimateGoWindows({ windows = [], modelId = '', env = {} } = {}) {
   });
 }
 
-module.exports = {
-  GO_LIMIT_USD,
-  GO_MODELS,
-  normalizeModelId,
-  goLimits,
-  modelPricing,
-  requestCostUsd,
-  remainingUsd,
-  estimateGoWindows
-};
+  return {
+    GO_LIMIT_USD,
+    GO_MODELS,
+    normalizeModelId,
+    goLimits,
+    modelPricing,
+    requestCostUsd,
+    remainingUsd,
+    estimateGoWindows
+  };
+
+});
