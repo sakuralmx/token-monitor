@@ -60,3 +60,21 @@ test('percentages are clamped so a >100 input cannot invert the remaining math',
   assert.equal(rows[0].usedPercent, 100);
   assert.equal(rows[0].remainingUsd, 0);
 });
+
+test('a null percentage is unknown, not a misleading full quota', () => {
+  const row = quota.estimateGoWindows({ windows: [{ kind: 'weekly', usedPercent: null }], modelId: 'kimi-k3' })[0];
+  assert.equal(row.usedPercent, null);
+  assert.equal(row.remainingUsd, null);
+  assert.equal(row.remainingRequests, null);
+});
+
+test('an env dollar-limit override scales request counts by the same factor', () => {
+  // weekly limit flipped $30 → $60 doubles the effective request budget.
+  const row = quota.estimateGoWindows({
+    windows: [{ kind: 'weekly', usedPercent: 50 }],
+    modelId: 'kimi-k3',
+    env: { TOKEN_MONITOR_OPENCODE_GO_LIMITS: '12,60,60' }
+  })[0];
+  assert.equal(row.remainingUsd, 30);
+  assert.equal(row.remainingRequests, 250); // 250 weekly × ($60/$30) × 50%
+});

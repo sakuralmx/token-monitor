@@ -68,8 +68,12 @@ function goLimits(env = {}) {
 }
 
 function clampPercent(value) {
-  if (!Number.isFinite(Number(value))) return null;
-  return Math.max(0, Math.min(100, Number(value)));
+  // Reject null/empty/boolean explicitly: Number(null)===0 and Number('')===0
+  // would otherwise turn "unknown" into a false "0% used / full quota" reading.
+  if (value === null || value === undefined || value === '' || value === false) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
 }
 
 function modelRequests(modelId) {
@@ -102,8 +106,14 @@ function estimateGoWindows({ windows = [], modelId = '', env = {} } = {}) {
       ? remainingUsd(limitUsd, usedPercent)
       : null;
     const windowRequests = requests && requests[kind] != null ? requests[kind] : null;
-    const remainingRequests = remaining != null && windowRequests != null
-      ? Math.floor(windowRequests * (100 - usedPercent) / 100)
+    // The published request table is anchored on the official $12/$30/$60. When
+    // an env override changes a dollar limit, scale the request count by the same
+    // factor so the two columns stay consistent under one quota definition.
+    const officialLimit = GO_LIMIT_USD[kind];
+    const requestScale = limitUsd != null && officialLimit ? limitUsd / officialLimit : 1;
+    const scaledRequests = windowRequests != null ? Math.round(windowRequests * requestScale) : null;
+    const remainingRequests = remaining != null && scaledRequests != null
+      ? Math.floor(scaledRequests * (100 - usedPercent) / 100)
       : null;
     return {
       kind,
