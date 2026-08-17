@@ -33,58 +33,96 @@
       cacheHitPercent: Number((Math.max(0, number(p.cacheRead)) / rawTotal * 100).toFixed(1))
     };
   }
-  function rawCapacityFromObservations(observations, currentComponents, options = {}) {
+  function rawCapacityFromObservations(observations, currentComponents, _options = {}) {
     const list = Array.isArray(observations) ? observations : [];
     const current = currentComponents && typeof currentComponents === 'object' ? currentComponents : {};
     const currentTotal = ['input', 'cacheRead', 'cacheWrite', 'output'].reduce((sum, key) => sum + Math.max(0, number(current[key])), 0);
     const currentCacheRatio = currentTotal > 0 ? Math.max(0, number(current.cacheRead)) / currentTotal : null;
-    const weights = { ...DEFAULT_WEIGHTS, ...(options.weights || {}) };
-    const currentWeighted = ['input', 'cacheRead', 'cacheWrite', 'output'].reduce((sum, key) => sum + Math.max(0, number(current[key])) * number(weights[key], 1), 0);
-    const currentAverageWeight = currentTotal > 0 ? currentWeighted / currentTotal : null;
-    const samples = [];
-    const windows = new Set();
-    for (let i = 1; i < list.length; i += 1) {
-      const before = list[i - 1]; const after = list[i];
-      if (!before?.components || !after?.components) continue;
-      // Skip intervals that straddle a reset: a percentage rebound (server refill)
-      // is the reliable marker, not a resetsAt comparison (see cycleSummaries).
-      if (number(after.remainingPercent) > number(before.remainingPercent)) continue;
-      const deltaPercent = number(before.remainingPercent) - number(after.remainingPercent);
-      if (!(deltaPercent > 0)) continue;
-      const rawDelta = Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => [key, number(after.components[key]) - number(before.components[key])]));
-      // A decrease means the local counter changed scope (for example a data
-      // archive was rebuilt). Treat it as a boundary instead of fabricating a
-      // partial interval from only the components that stayed positive.
-      if (Object.values(rawDelta).some((value) => value < 0)) continue;
-      const delta = rawDelta;
-      const raw = delta.input + delta.cacheRead + delta.cacheWrite + delta.output;
-      if (raw < 100) continue;
-      const intervalWeighted = ['input', 'cacheRead', 'cacheWrite', 'output'].reduce((sum, key) => sum + delta[key] * number(weights[key], 1), 0);
-      const intervalAverageWeight = intervalWeighted / raw;
-      // Normalize every historical interval to the current usage mix. This lets
-      // cache-heavy and cache-light periods contribute without pretending that
-      // they have the same raw-token capacity.
-      const mixAdjustment = currentAverageWeight > 0 ? intervalAverageWeight / currentAverageWeight : 1;
-      samples.push(raw * 100 / deltaPercent * mixAdjustment);
-      windows.add(after.resetsAt || before.resetsAt || 'unknown');
+
+    // A quota cycle is long (typically a month), so single-refresh percentage
+    // movements are tiny and cache-noise-dominated. Differencing adjacent points
+    // therefore accumulates samples far too slowly and is easily dragged down by
+    // one cache-heavy refresh. Instead we anchor on whole-cycle totals:
+    //   capacity = cycleTokens × 100 / cycleUsedPercent
+    // which uses only the first/last observation of each closed cycle (the two
+    // most reliable points) and is updated only on reset — long cycles make it
+    // steadier, not noisier.
+    const cycles = cycleSummaries(list);
+    const closedCapacities = [];
+    for (const cycle of cycles) {
+      if (cycle.current || cycle.partial) continue;
+      if (!(cycle.usedPercent > 0) || !(cycle.rawTokens > 0)) continue;
+      const mixAdjustment = 1; // closed cycles already wait for their own mix; no cross-mix squeeze
+      closedCapacities.push(cycle.rawTokens * 100 / cycle.usedPercent * mixAdjustment);
     }
-    if (!samples.length) return null;
-    samples.sort((a, b) => a - b);
-    const middle = Math.floor(samples.length / 2);
-    const sampledCapacity = samples.length % 2 ? samples[middle] : (samples[middle - 1] + samples[middle]) / 2;
-    // The history list below the estimate shows raw tokens for the active quota
-    // cycle. Keep the headline capacity on that same observable scale: it cannot
-    // be smaller than the capacity implied by tokens already consumed during the
-    // measured percentage drop. This also protects a cache-heavy active cycle
-    // from being understated by the historical-median/current-mix projection.
-    const currentCycle = cycleSummaries(list).at(-1);
-    const observedCapacityFloor = currentCycle?.rawTokens > 0 && currentCycle?.usedPercent > 0
+
+    // The active cycle contributes a cumulative ratio (total tokens consumed so
+    // far over the percentage burned so far). This is the only live signal while
+    // the first cycle is still open, and it adapts immediately to an official
+    // quota shrink/expand within the current cycle.
+    const currentCycle = cycles.at(-1);
+    const currentCumulativeCapacity = currentCycle && currentCycle.usedPercent > 0 && currentCycle.rawTokens > 0
       ? currentCycle.rawTokens * 100 / currentCycle.usedPercent
       : 0;
-    const capacity = Math.max(sampledCapacity, observedCapacityFloor);
-    const windowCount = windows.size;
-    const confidence = windowCount >= 3 && samples.length >= 25 ? 'high' : windowCount >= 2 && samples.length >= 12 ? 'medium' : 'low';
-    return { capacity: Math.round(capacity), samples: samples.length, windows: windowCount, confidence, cacheHitPercent: currentCacheRatio === null ? null : Number((currentCacheRatio * 100).toFixed(1)) };
+
+    // Hard floor invariant: capacity can never be less than what the current
+    // cycle's observed consumption already implies — otherwise "remaining"
+    // arithmetic would claim the account has fewer tokens than it already spent.
+    const observedCapacityFloor = currentCumulativeCapacity > 0
+      ? currentCumulativeCapacity
+      : 0;
+
+    const wq = (values) => {
+      // Weighted-ish upper-middle quantile: sort, then take the element just below
+      // the maximum decile to avoid a single inflated/rounded percentage edge
+      // while still preferring the upper envelope (remote use only lowers a
+      // sample, so high quantiles are the honest estimate).
+      if (!values.length) return null;
+      const s = values.slice().sort((a, b) => a - b);
+      const index = s.length < 3 ? s.length - 1 : Math.floor((s.length - 1) * 0.8);
+      return s[index];
+    };
+
+    let capacity;
+    let sourceKind;
+    if (closedCapacities.length) {
+      const historical = wq(closedCapacities) || closedCapacities[closedCapacities.length - 1];
+      if (currentCumulativeCapacity > 0) {
+        // Adapt to an official quota change within the current cycle: if the live
+        // cumulative ratio diverges sharply from history, weight the live signal
+        // strongly; otherwise blend toward the stable historical anchor.
+        const divergence = historical > 0 ? Math.abs(currentCumulativeCapacity - historical) / historical : 1;
+        const liveWeight = Math.min(1, Math.max(0.35, divergence * 2));
+        capacity = historical * (1 - liveWeight) + currentCumulativeCapacity * liveWeight;
+        sourceKind = 'hybrid';
+      } else {
+        capacity = historical;
+        sourceKind = 'historical';
+      }
+    } else if (currentCumulativeCapacity > 0) {
+      // No closed cycle yet: fall back to the cumulative extrapolation (honest,
+      // labelled cumulative in the caller) rather than inventing a median.
+      capacity = currentCumulativeCapacity;
+      sourceKind = 'cumulative';
+    } else {
+      return null;
+    }
+
+    capacity = Math.max(capacity, observedCapacityFloor);
+
+    const windowCount = cycles.length;
+    const totalSamples = list.length;
+    const confidence = closedCapacities.length >= 3 ? 'high' : closedCapacities.length >= 1 ? 'medium' : 'low';
+    return {
+      capacity: Math.round(capacity),
+      samples: closedCapacities.length,
+      windows: windowCount,
+      confidence,
+      sourceKind,
+      cacheHitPercent: currentCacheRatio === null ? null : Number((currentCacheRatio * 100).toFixed(1)),
+      observedCapacityFloor: observedCapacityFloor > 0 ? Math.round(observedCapacityFloor) : 0,
+      totalSamples
+    };
   }
   function cycleSummaries(observations) {
     const list = Array.isArray(observations) ? observations.filter((item) => item && typeof item === 'object') : [];

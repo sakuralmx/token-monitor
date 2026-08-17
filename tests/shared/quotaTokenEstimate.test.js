@@ -40,7 +40,7 @@ test('projects raw token capacity using the current cache mix', () => {
   assert.equal(result.conservativeRemaining, 2_894_737);
   assert.equal(result.cacheHitPercent, 90);
 });
-test('normalizes every historical interval to the current cache mix', () => {
+test('cumulative extrapolation drives capacity before any cycle closes', () => {
   const observations = [
     { remainingPercent: 80, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 } },
     { remainingPercent: 79, components: { input: 10_000, cacheRead: 90_000, cacheWrite: 0, output: 0 } },
@@ -48,8 +48,10 @@ test('normalizes every historical interval to the current cache mix', () => {
     { remainingPercent: 77, components: { input: 225_000, cacheRead: 190_000, cacheWrite: 0, output: 0 } }
   ];
   const result = quota.rawCapacityFromObservations(observations, { input: 20_000, cacheRead: 180_000, cacheWrite: 0, output: 0 });
+  // Whole-cycle cumulative ratio: 415000 raw tokens over a 3% burn → 13.83M.
   assert.equal(result.capacity, 13_833_333);
-  assert.equal(result.samples, 3);
+  assert.equal(result.sourceKind, 'cumulative');
+  assert.equal(result.samples, 0);
   assert.equal(result.cacheHitPercent, 90);
 });
 test('raw capacity cannot be lower than the active cycle consumption implies', () => {
@@ -83,17 +85,20 @@ test('a quota reset preserves history and starts a new comparison window', () =>
   assert.equal(state.observations.length, 2);
   assert.equal(state.first.resetsAt, 'b');
 });
-test('raw capacity uses intervals from both sides of quota resets', () => {
+test('a closed cycle contributes a strong capacity anchor', () => {
+  // One closed full cycle (100 → 40 over 60%) followed by the start of the next.
   const observations = [
-    { remainingPercent: 80, components: { input: 0, cacheRead: 0 }, resetsAt: 'a' },
-    { remainingPercent: 79, components: { input: 10_000, cacheRead: 90_000 }, resetsAt: 'a' },
-    { remainingPercent: 100, components: { input: 10_000, cacheRead: 90_000 }, resetsAt: 'b' },
-    { remainingPercent: 99, components: { input: 20_000, cacheRead: 180_000 }, resetsAt: 'b' }
+    { remainingPercent: 100, components: { input: 0, cacheRead: 0 }, at: '2026-08-01T00:00:00Z', resetsAt: 'a' },
+    { remainingPercent: 40, components: { input: 60_000, cacheRead: 540_000 }, at: '2026-08-07T00:00:00Z', resetsAt: 'a' },
+    { remainingPercent: 100, components: { input: 60_000, cacheRead: 540_000 }, at: '2026-08-08T00:00:00Z', resetsAt: 'b' },
+    { remainingPercent: 90, components: { input: 70_000, cacheRead: 630_000 }, at: '2026-08-09T00:00:00Z', resetsAt: 'b' }
   ];
-  const result = quota.rawCapacityFromObservations(observations, { input: 20_000, cacheRead: 180_000 });
-  assert.equal(result.samples, 2);
+  const result = quota.rawCapacityFromObservations(observations, { input: 0, cacheRead: 0 });
+  // Closed cycle: 600000 tokens over 60% → 1,000,000 capacity.
+  assert.equal(result.samples, 1);
   assert.equal(result.windows, 2);
-  assert.equal(result.capacity, 10_000_000);
+  assert.equal(result.sourceKind, 'hybrid');
+  assert.ok(result.capacity >= 1_000_000);
 });
 test('records token consumption separately for every reset cycle', () => {
   const observations = [
@@ -133,12 +138,11 @@ test('a rolling resetsAt that advances every refresh does not shard one cycle', 
   // still monotonically decreasing within one continuous cycle. Each observation
   // carries a different resetsAt value — the old strict `resetsAt !==` boundary
   // check split this single cycle into four fake groups.
-  let rolling = 1;
   const observations = [
-    { remainingPercent: 75, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: `t${rolling++}` },
-    { remainingPercent: 50, components: { input: 1000, cacheRead: 4000, cacheWrite: 0, output: 0 }, at: '2026-08-15T00:00:00Z', resetsAt: `t${rolling++}` },
-    { remainingPercent: 25, components: { input: 2000, cacheRead: 8000, cacheWrite: 0, output: 0 }, at: '2026-08-16T00:00:00Z', resetsAt: `t${rolling++}` },
-    { remainingPercent: 10, components: { input: 3000, cacheRead: 12000, cacheWrite: 0, output: 0 }, at: '2026-08-17T00:00:00Z', resetsAt: `t${rolling++}` }
+    { remainingPercent: 75, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: 't1' },
+    { remainingPercent: 50, components: { input: 1000, cacheRead: 4000, cacheWrite: 0, output: 0 }, at: '2026-08-15T00:00:00Z', resetsAt: 't2' },
+    { remainingPercent: 25, components: { input: 2000, cacheRead: 8000, cacheWrite: 0, output: 0 }, at: '2026-08-16T00:00:00Z', resetsAt: 't3' },
+    { remainingPercent: 10, components: { input: 3000, cacheRead: 12000, cacheWrite: 0, output: 0 }, at: '2026-08-17T00:00:00Z', resetsAt: 't4' }
   ];
   const cycles = quota.cycleSummaries(observations);
   assert.equal(cycles.length, 1);
