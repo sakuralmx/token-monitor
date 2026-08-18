@@ -107,6 +107,30 @@ test('composed full records remain compatible with hub normalization and merging
   assert.equal(merged.receivedAt, '2026-07-21T01:01:01.000Z');
 });
 
+test('quota percentage histories normalize and merge independently on Node and Worker', () => {
+  const observation = (at, remainingPercent) => ({ at, remainingPercent, components: {} });
+  const existing = normalizeDeviceRecord({
+    deviceId: 'device-1',
+    quotaPercentageHistory: {
+      codex: { accountKey: 'c', observations: [observation('2026-08-18T00:00:00Z', 50)] },
+      opencode: { accountKey: 'o', observations: [observation('2026-08-18T01:00:00Z', 60)] }
+    }
+  });
+  assert.deepEqual(workerUsage.normalizeDeviceRecord({
+    ...existing,
+    quotaPercentageHistory: existing.quotaPercentageHistory
+  }).quotaPercentageHistory, existing.quotaPercentageHistory);
+  const merged = mergeDeviceRecord(existing, {
+    deviceId: 'device-1',
+    limitsOnly: true,
+    quotaPercentageHistory: {
+      codex: { accountKey: 'c', observations: [observation('2026-08-18T02:00:00Z', 40)] }
+    }
+  });
+  assert.deepEqual(merged.quotaPercentageHistory.codex.observations.map((row) => row.remainingPercent), [50, 40]);
+  assert.equal(merged.quotaPercentageHistory.opencode.observations[0].remainingPercent, 60);
+});
+
 test('limits updates publish retained usage and history without a renderer', () => {
   const records = [];
   const state = createDeviceState({ onRecord: (record) => records.push(record) });

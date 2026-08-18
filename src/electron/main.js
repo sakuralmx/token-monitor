@@ -66,6 +66,11 @@ const { clientDiagnosticRoots, lookupModelPricing, normalizeHistoryIntervalMs, v
 const { deviceRecordFromAnchor } = require('../shared/anchorSeed');
 const { sendWhenRendererReady } = require('./deferredWindowSend');
 const { createDeviceRuntime } = require('../shared/deviceRuntime');
+const {
+  migrateLegacyQuotaHistory,
+  normalizeQuotaPercentageHistory,
+  observeQuotaPercentages
+} = require('../shared/quotaPercentageHistory');
 const { createDiagnosticJournal } = require('../shared/diagnosticJournal');
 const { createDiagnosticReportGenerator } = require('./diagnostics');
 const { createDiagnosticSnapshotBuilder, diagnosticStreamDetailCode, selectLocalDeviceRecord } = require('./diagnosticSnapshot');
@@ -493,6 +498,10 @@ function defaultSettings() {
     opencodeAmbientEnabled: parseBoolean(process.env.TOKEN_MONITOR_OPENCODE_AMBIENT, true),
     opencodeLocalLimitsEnabled: false,
     showLimitUsed: parseBoolean(process.env.TOKEN_MONITOR_SHOW_LIMIT_USED, false),
+    // Provider-isolated official quota percentage observations. This history is
+    // audit data, not a token-capacity estimate, and is recorded by the main
+    // process even when no renderer is open.
+    quotaPercentageHistory: {},
     // Manual subscription metadata. Plain preferences, not credentials, so they
     // live in settings.json and cross to the renderer unredacted.
     subscriptions: [],
@@ -2074,6 +2083,14 @@ function readSettings() {
     const storedCredentials = loadCredentialSettings(saved);
     if (!saved.secret && defaults.secret) delete saved.secret;
     const merged = { ...defaults, ...saved, ...storedCredentials };
+    // Preserve the percentage observations collected by the retired capacity
+    // feature, but migrate them into a provider-isolated history that carries no
+    // capacity, weights, samples, projections, or UI settings.
+    merged.quotaPercentageHistory = migrateLegacyQuotaHistory(
+      saved.quotaTokenEstimate,
+      saved.quotaPercentageHistory
+    );
+    delete merged.quotaTokenEstimate;
     // Migrate older configs that predate hubMode: infer from hubUrl.
     if (saved.hubMode === undefined) {
       merged.hubMode = (saved.hubUrl && String(saved.hubUrl).trim()) ? 'client' : 'local';
@@ -2333,6 +2350,16 @@ function summaryWithArchivedClientUsage(summary) {
     return summaryWithArchivesApplied(summary, ensureSessionUsageArchiveLoaded(), now);
   }
   return summaryWithArchivesApplied(summary, updateSessionUsageArchive(summary, now), now);
+}
+
+function recordQuotaPercentageHistory(record) {
+  const previous = normalizeQuotaPercentageHistory(settings?.quotaPercentageHistory);
+  const next = observeQuotaPercentages(previous, record);
+  if (JSON.stringify(next) !== JSON.stringify(previous)) {
+    settings.quotaPercentageHistory = next;
+    saveSettings();
+  }
+  return Object.keys(next).length ? { ...record, quotaPercentageHistory: next } : record;
 }
 
 function applyMacActivationPolicy(state = {}) {
@@ -3386,6 +3413,7 @@ function startSyncCollector() {
     initialLimits: lastCollectedDevice?.limits,
     limitsOptions: electronLimitsConfig(),
     transformUsage: summaryWithArchivedClientUsage,
+    transformRecord: recordQuotaPercentageHistory,
     usageOptions: electronUsageConfig('sync-collector'),
     sink,
     onDiagnosticEvent: recordDiagnosticEvent,
@@ -3431,6 +3459,7 @@ function startHostCollector() {
     initialLimits: lastCollectedDevice?.limits,
     limitsOptions: electronLimitsConfig(),
     transformUsage: summaryWithArchivedClientUsage,
+    transformRecord: recordQuotaPercentageHistory,
     usageOptions: electronUsageConfig('host-collector'),
     sink,
     onDiagnosticEvent: recordDiagnosticEvent,
@@ -3958,6 +3987,7 @@ function startLocalCollector() {
     initialLimits: lastCollectedDevice?.limits,
     limitsOptions: electronLimitsConfig(),
     transformUsage: summaryWithArchivedClientUsage,
+    transformRecord: recordQuotaPercentageHistory,
     usageOptions,
     progressive: true,
     onRecord: (summary, meta) => {

@@ -23,7 +23,12 @@ test('runtime has no reachable capacity estimate settings, snapshots, or calcula
   const usage = read('src/shared/usage.js');
   const manifest = read('scripts/hub-build-manifest.js');
 
-  assert.doesNotMatch(`${main}\n${usage}\n${manifest}`, /quotaTokenEstimate|quotaTokenEstimates/);
+  assert.doesNotMatch(`${main}\n${usage}\n${manifest}`, /quotaTokenEstimates/);
+  assert.doesNotMatch(`${main}\n${usage}\n${manifest}`, /rawCapacityFromObservations|fitDeductionModel|optimisticRemaining|conservativeRemaining/);
+  // The singular legacy key may appear only at the settings migration boundary;
+  // it is consumed and deleted rather than exposed as a current setting/wire API.
+  assert.match(main, /migrateLegacyQuotaHistory\(\s*saved\.quotaTokenEstimate/);
+  assert.match(main, /delete merged\.quotaTokenEstimate/);
   assert.equal(fs.existsSync(path.join(__dirname, '../../src/shared/quotaTokenEstimate.js')), false);
   assert.equal(fs.existsSync(path.join(__dirname, '../../worker/src/shared/quotaTokenEstimate.js')), false);
 });

@@ -6,9 +6,10 @@
 
 - 时间：2026-08-18（删除容量预估）
 - 已删除面向用户的 GPT/Codex 与 OpenCode Go 两张额度趋势卡，以及启用、备用容量、安全预留三项设置和对应 CSS/脚本入口。
-- 已删除 `src/shared/quotaTokenEstimate.js`、Worker 生成副本及专用测试；主进程不再归一化设置、采集校准、生成 `quotaTokenEstimate(s)` 快照，Hub/Worker 归一化也会丢弃旧设备发来的历史字段。
-- 保留独立有用的 provider 归属统计（`providerTokens/providerCosts/...`），它只说明 API 路由，不再进入容量推算、权重拟合、剩余 Token 或可用时间投影。
-- 验证：目标源码/Worker/脚本检索均为 0 命中；旧 wire 字段仅在负向回归测试中作为输入并确认被丢弃。聚焦数据流测试 90/90、全量 lint、Hub build 13/13 通过。全量 `npm run verify` 3483 通过、2 失败：既有 Windows symlink `EPERM`，以及一次并行环境中的 Undici `bad port`；后者单独复跑通过。
+- 已删除 `src/shared/quotaTokenEstimate.js`、Worker 生成副本及专用容量测试；主进程不再采集或同步 capacity、weights、samples、剩余 Token、预计可用时间等推算数据，Hub/Worker 也会丢弃旧 `quotaTokenEstimate(s)` 字段。
+- **百分比观测保留且解耦**：新增 `quotaPercentageHistory.codex/opencode`，由主进程的 Device Runtime record 路径自动记录，不依赖 renderer 是否打开。两者分别按账户长期保存官方 `remainingPercent`、ISO `at`、可选 `resetsAt` 及审计用累计 components，不设条数上限；连续相同百分比的平台期只保留首次与最后一次确认，中间重复轮询压缩掉，百分比变化点完整保留。limits-only 更新按 provider 合并，不覆盖另一条历史。
+- 旧 settings 中 calibration observations 会尽力迁移到新历史；新同步字段经过 Node/Worker 同一净化逻辑，只出现在认证后的 `devices[]`，公共统计不会暴露。
+- 保留独立有用的 provider 归属统计（`providerTokens/providerCosts/...`）。OpenCode Go 的审计 components 只取 `provider=opencode-go`，它们不再进入容量推算、权重拟合、剩余 Token 或可用时间投影。
 
 ## 上一轮
 
