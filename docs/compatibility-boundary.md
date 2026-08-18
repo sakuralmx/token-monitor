@@ -1,8 +1,19 @@
-# Codex / OpenCode Go 兼容边界与工作树基线
+# Codex / OpenCode Go 兼容边界历史快照（已废弃）
 
-> 盘点时间：2026-08-18。本文件只锁定边界与既有未提交修改，不重写实现。后续实现前后都应以本基线核对，禁止用 reset/checkout/整文件覆盖清除下列改动。
+> **状态：已被最终决策取代，不是当前维护契约。** 本文件记录 2026-08-18 容量预估删除工作开始前的工作树快照，仅供追溯当时的输入与决策过程。最终实现及现行边界以 `docs/handoff.md` 的“最近一轮（删除容量预估）”为准。下文所有“必须保留”“后续必须”等措辞都是历史要求，**不得据此恢复**容量设置、校准/拟合/投影函数、`quotaTokenEstimate(s)` wire 字段、`src/shared/quotaTokenEstimate.js` 或 Worker 副本。
 
-## 1. Git 工作树基线
+## 当前生效的兼容边界
+
+- 删除并保持删除：Codex/OpenCode Go 容量趋势卡、容量/剩余 Token/预计可用时间展示，以及启用、备用容量、安全预留设置。
+- 删除并保持删除：容量推算、权重拟合、剩余 Token 投影、校准路径、`quotaTokenEstimate(s)` wire 协议、`src/shared/quotaTokenEstimate.js` 及 Worker 副本。
+- 旧 settings/wire 字段只允许在升级输入边界被容忍并丢弃；不得读取、回写、同步或重新暴露为现行能力。
+- 保留：主进程在收到有效 limits + usage summary 时记录 Codex 与 OpenCode Go 各自的官方额度百分比观测历史（`remainingPercent`、ISO `at`、可选 `resetsAt`），不依赖 renderer 卡片渲染；两个 provider 隔离。
+- 保留：已有百分比历史的迁移/读取，以及多设备同步的有界、净化、按 provider 合并和 limits-only 不覆盖语义。
+- 保留：用于审计/归属的 provider token components；它们不得再进入容量计算或展示。OpenCode Go 关联用量只取 `provider=opencode-go`。
+
+以下内容为被取代的历史快照，不具规范效力。
+
+## 1. 历史 Git 工作树基线
 
 - 分支：`personal`（相对 `private/personal` ahead 21）
 - HEAD：`364aae39240d9628ab1a13a39af06ef8d97ed7ed`
@@ -58,16 +69,15 @@
 - 用量 History：`historyAvailable` 是能力位；`history` 缺失表示本 tick 无更新、`null` 表示不可用、对象表示替换 retained history（`src/shared/usage.js:920-925`）。它由 `src/shared/history.js` 的日/月 client/model 图生成，当前没有 provider 维度，不能冒充 OpenCode Go provider 历史。
 - Period live/all-time：provider 新字段属于 period wire shape，随 normalize/merge/aggregate 跨设备相加；它们不是 retained History 的替代品。
 
-## 3. 必须保留的字段、路径和协议
+## 3. 当时提出的保留要求（已被最终决策取代）
 
-### 设置与容量卡
+### 设置与容量卡（已删除，不得恢复）
 
-- 必须保留 `quotaTokenEstimate.enabled/capacity/reservePercent/weights`。
-- 必须保留 `quotaTokenEstimate.calibration`：Codex 本地历史，当前 version 3。
-- 必须保留 `quotaTokenEstimate.opencodeCalibration`：OpenCode Go 本地历史；仅 version >= 4 有效。
-- 必须保留推算函数契约：`clientComponents`、`providerComponents`、`equivalentTokens`、`rawTokenProjection`、`rawCapacityFromObservations`、`cycleSummaries`、`estimate`、`advanceCalibration`、`fitDeductionModel`、同步 normalize/select 函数。
-- 必须保留 Codex 路径默认行为：默认 client 仍为 `codex`；不能因 Go provider 泛化改变旧调用。
-- 必须保留 OpenCode limits provider id `opencode` 与 usage provider id `opencode-go` 的区分；前者是卡/账户协议 id，后者是调用渠道归属 id。
+- 当时要求保留 `quotaTokenEstimate.enabled/capacity/reservePercent/weights`；最终实现已删除这些设置。
+- 当时要求保留 `quotaTokenEstimate.calibration` 与 `quotaTokenEstimate.opencodeCalibration`；最终实现已删除校准路径。旧设置只在输入边界被容忍并丢弃。
+- 当时要求保留 `clientComponents`、`providerComponents`、`equivalentTokens`、`rawTokenProjection`、`rawCapacityFromObservations`、`cycleSummaries`、`estimate`、`advanceCalibration`、`fitDeductionModel` 及同步 normalize/select 函数；最终实现已删除这些容量推算契约及其模块。
+- 当时的 Codex 默认 client 与 OpenCode 卡片调用约束随容量功能一并失效，不得恢复其调用。
+- `opencode` limits provider id 与 `opencode-go` usage provider id 的归属区分仍然有效，但只用于官方百分比观测与审计统计，不再服务于容量卡或容量推算。
 
 ### Period wire shape
 
@@ -78,17 +88,15 @@
 
 ### 同步兼容
 
-- 必须保留 legacy `quotaTokenEstimate`（只承载 Codex），供旧 Hub/客户端读取。
-- 必须保留 additive `quotaTokenEstimates.codex/opencode`；普通更新和 limits-only 更新都按 provider 合并，不得因某次账户缺失覆盖另一 provider 的 snapshot。
-- 必须保留 `SYNC_SAMPLE_LIMIT=256`、`SYNC_OBSERVATION_LIMIT=512`、accountKey/sourceDeviceId 选择规则和 renderer/default-deny 凭据边界。
-- 必须保留 `historyAvailable/history/periodWindows` 的缺失与 null 语义，以及 history-less tick 的 carry-forward。
+- 当时要求保留 legacy `quotaTokenEstimate` 与 additive `quotaTokenEstimates.codex/opencode`；最终实现已删除这些 wire 字段。Hub/Worker 必须丢弃旧设备传入的字段，不能继续读取、转发或合并。
+- 当前同步契约只保留官方额度百分比观测历史：有界、净化、按 provider 合并，且 limits-only 更新不得覆盖另一 provider 的已有观测。
+- `historyAvailable/history/periodWindows` 的缺失与 null 语义及 history-less tick carry-forward 仍按各自现行协议维护，与已删除的容量快照无关。
 
 ### 共享源码与 Worker
 
-- 单一事实源：`src/shared/usage.js`、`src/shared/quotaTokenEstimate.js`。
-- 生成副本：`worker/src/shared/usage.js`、`worker/src/shared/quotaTokenEstimate.js`；禁止直接编辑，必须由 `npm run sync:worker` 生成。
-- `scripts/hub-build-manifest.js:15-29` 把上述共享模块纳入 Worker/Hub build 闭包；共享代码不得引入 Node built-ins。
-- 修改共享闭包后必须依次执行 `npm run sync:worker`、相关测试，并在最终稳定后执行一次 `npm run update:hub-build`；不能手改 generated Worker metadata。
+- `src/shared/usage.js` 及其 Worker 生成副本仍遵循单一事实源和 `npm run sync:worker` 规则。
+- `src/shared/quotaTokenEstimate.js` 与 `worker/src/shared/quotaTokenEstimate.js` 已删除，**不得恢复**，也不得重新加入 Hub build 闭包。
+- 修改仍存在的共享闭包后，继续执行 `npm run sync:worker`、相关测试，并在最终稳定后执行一次 `npm run update:hub-build`；不能手改 generated Worker metadata。
 
 ### Provider 归属修正路径
 
