@@ -494,7 +494,7 @@ function defaultSettings() {
     opencodeAmbientEnabled: parseBoolean(process.env.TOKEN_MONITOR_OPENCODE_AMBIENT, true),
     opencodeLocalLimitsEnabled: false,
     showLimitUsed: parseBoolean(process.env.TOKEN_MONITOR_SHOW_LIMIT_USED, false),
-    quotaTokenEstimate: { enabled: true, capacity: 0, reservePercent: 0, calibration: null,
+    quotaTokenEstimate: { enabled: true, capacity: 0, reservePercent: 0, calibration: null, opencodeCalibration: null,
       weights: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6 } },
     // Manual subscription metadata. Plain preferences, not credentials, so they
     // live in settings.json and cross to the renderer unredacted.
