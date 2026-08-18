@@ -1,39 +1,30 @@
-# 审查报告
+# 审核报告
 
-> 审查日期：2026-08-18
-> 审查方式：实现者自审 + 对抗式审查代理（review 工具）多轮迭代；范围为本轮 GPT 额度趋势精简与 OpenCode Go 统计。
+## 范围
 
-## 验收结论
+- commits `98dc6d8..ff7cf63` 与其后的长期额度百分比历史修复。
+- 目标：删除 Codex/OpenCode Go Token 容量预估；保留各账户官方百分比长期历史；连续相同百分比仅保留平台期首尾；支持 Electron、headless、Node Hub、Worker 与多设备同步。
 
-通过（2026-08-18 追加修正）。本轮针对用户实测补齐：OpenCode/DSH 来源核查、按缓存与输出权重计算的容量硬下限、8/14 与 8/17 低水位回补不误切周期、OpenCode 卡按功能而非逐字段复制、Codex/OpenCode provider-keyed 多设备校准同步。对抗复查发现的逐 provider 合并、并发设置覆盖、重置边界、组件回滚与 Hub registry 问题均已修复并补测试。
+## 发现及修复
 
-## 审查迭代记录
+1. **严重：旧 pending 在主进程规范化时丢失。** 统一规范化保留 pending；绑定时与已有账户历史共同合并。
+2. **严重：每个 provider 只有一个账户槽。** 升级为 `provider.accounts[accountKey]`，A→B→A 不覆盖；采集遍历全部 provider 行。
+3. **一般：Headless Agent 不记录历史。** agent runtime 转发 `transformRecord`，agent 在共享数据目录持久化本地历史。
+4. **严重：长期历史进入普通 ingest，最终超过 1 MiB。** `serializeSyncPayload` 的所有重建路径都剥离历史；新增认证 `/api/quota-history` 独立数据面，以最多 200 条分块上传。
+5. **严重：多设备同账户历史没有形成并集。** Node/Worker Hub 使用 hub-scoped 历史，按 provider/account/timestamp 幂等合并并压缩。
+6. **严重：Hub 写失败后内存与磁盘不一致。** 专用历史写及旧 ingest 兼容导入均在 persist 失败时回滚。
+7. **一般：每次重传完整历史。** Electron settings 与 headless 文件分别保存成功上传的 observation timestamp 集合；迟到的旧时间观测仍会上传，不会被最大时间游标跳过。
+8. **严重：旧顶层 accountKey 被忽略。** 迁移读取 `legacy.accountKey` 与 `legacy.opencodeAccountKey`，避免把已知 A 账户历史绑定到 B。
+9. **安全/隐私。** 仅接受非 `source=local` 官方窗口；公共 stats 不读取 quota history；GET/POST 历史端点位于现有 secret gate 后。
 
-### 第一轮（review 工具，4 角度）
-- [一般] `requestCostUsd` 忽略 cacheWrite 定价 → 请求成本被低估。
-- [一般] 未知模型返回 null 而非回退；缺 Peak/Off-Peak 两档价解析。
-- [建议] 充值/部分回充被 +1% 阈值误判为周期重置。
-- [建议] `estimateGoWindows` 的 `usedPercent` 未 clamp。
+## 验收结果
 
-### 第二轮（修复后复查）
-- [一般] `clampPercent(null)` 因 `Number(null)=0` 被强转为「满额」而非未知。
-- [建议] env 覆盖美元上限后 `remainingRequests` 不随缩放。
+- `npm run lint`：通过。
+- 聚焦测试：67/67 通过。
+- 完整 `npm test`：3509 tests，3502 passed，0 failed，7 skipped。
+- Hub build registry：与当前 Node/Worker 闭包一致。
+- `git diff --check`：通过。
 
-### 第三轮（修复后复查）
-- [一般] `clampPercent(true)` 返回 1（`Number(true)=1`），布尔值未统一拒绝。
+## 结论
 
-### 第四轮（修复后复查）
-- 0 个问题，收敛。
-
-## 修复方式摘要
-
-1. 容量/换算：彻底移除「按 token 价格自行反推成本」的路径，改用 OpenCode 官方发布的**分模型请求数表**（每 5h/周/月），该表已在上游折算 Peak/Off-Peak、缓存写入等档位，避免重造有损的定价模型。
-2. 百分比健壮性：`clampPercent` 显式拒绝 `null`/`undefined`/空串/布尔值（含 `true`），避免 `Number()` 强转把「未知」读成 0 或 1。
-3. env 覆盖一致性：美元上限覆盖生效时，请求数按 `limitUsd / officialLimit` 同比例缩放，保证「剩余美元」与「剩余请求」两列口径一致。
-4. 充值误判：保留百分比回升 >1 的周期边界启发式，并在注释明确这是「充值 vs 重置不可区分」的已知取舍（无可靠 server 重置时间戳时的最优选择）。
-
-## 验证
-
-- 全量测试 3517 项：3509 通过，1 失败为既有 Windows symlink `EPERM`（macWidget 测试夹具，与本轮无关），另 7 跳过。
-- 新增/更新测试：`quotaTokenEstimate.test.js`（周期切分、累计口径、硬下限、整周期锚点、美元单位复用）、`opencodeGoQuota.test.js`（美元/请求数换算、无模型降级、null/布尔/超界百分比、env 缩放）、`quotaTokenEstimateSync.test.js`（OpenCode Go 卡渲染、冗余项删除断言）。
-- ESLint 全量通过；Hub build registry 更新后 13/13 聚焦测试通过；`npm run sync:worker` 已执行，worker vendored 副本与 registry 无漂移。
+审核问题已闭合，当前交付满足功能、迁移、长期数据、普通同步大小、失败回滚与隐私边界要求，可以进入 Windows 打包与本机重装验收。

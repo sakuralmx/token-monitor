@@ -10,6 +10,8 @@
 - **百分比观测保留且解耦**：新增 `quotaPercentageHistory.codex/opencode`，由主进程的 Device Runtime record 路径自动记录，不依赖 renderer 是否打开。两者分别按账户长期保存官方 `remainingPercent`、ISO `at`、可选 `resetsAt` 及审计用累计 components，不设条数上限；连续相同百分比的平台期只保留首次与最后一次确认，中间重复轮询压缩掉，百分比变化点完整保留。limits-only 更新按 provider 合并，不覆盖另一条历史。
 - 旧 settings 中 calibration observations 会尽力迁移到新历史；新同步字段经过 Node/Worker 同一净化逻辑，只出现在认证后的 `devices[]`，公共统计不会暴露。
 - 保留独立有用的 provider 归属统计（`providerTokens/providerCosts/...`）。OpenCode Go 的审计 components 只取 `provider=opencode-go`，它们不再进入容量推算、权重拟合、剩余 Token 或可用时间投影。
+- 审核加固：历史结构升级为 provider→accounts→accountKey；Electron/headless 都本地持久化；普通 `/api/ingest` 永远剥离长期历史，改由认证 `/api/quota-history` 每批最多 200 条增量上传；Node/Worker Hub 按账户与时间幂等合并。上传游标记录已确认的时间戳集合，迟到的旧时间观测仍会补传。
+- 验收：ESLint 通过；聚焦 67/67；完整测试 3509 项中 3502 通过、0 失败、7 跳过；Hub build registry 与 Worker 生成副本已同步。
 
 ## 上一轮
 

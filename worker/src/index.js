@@ -5,6 +5,7 @@ import { aggregateDevices, mergeDeviceRecord, aggregateHistory } from './shared/
 import { DEFAULT_STALE_AFTER_MS } from './shared/syncUploadInterval.js';
 import { deviceHistoryRevision, historyPreview, historyRevision } from './shared/history.js';
 import hubBuildIdentity from './shared/hubBuildIdentity.js';
+import quotaHistory from './shared/quotaPercentageHistory.js';
 
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
@@ -224,14 +225,32 @@ export class HubDO {
       });
     }
 
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/api/quota-history') {
+      return jsonResponse(200, { ok: true, history: quotaHistory.normalizeQuotaPercentageHistory(await this.state.storage.get('quota-history')) });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/quota-history') {
+      let payload;
+      try { payload = await request.json(); }
+      catch (error) { return jsonResponse(400, { error: 'bad_request', message: error.message }); }
+      const previous = await this.state.storage.get('quota-history');
+      await this.state.storage.put('quota-history', quotaHistory.mergeQuotaPercentageHistory(previous, payload?.history));
+      return jsonResponse(200, { ok: true });
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/ingest') {
       let payload;
       try { payload = await request.json(); }
       catch (error) { return jsonResponse(400, { error: 'bad_request', message: error.message }); }
       if (!payload.deviceId && !payload.id) return jsonResponse(400, { error: 'deviceId_required' });
       const deviceId = String(payload.deviceId || payload.id);
+      if (payload.quotaPercentageHistory) {
+        const previousHistory = await this.state.storage.get('quota-history');
+        await this.state.storage.put('quota-history', quotaHistory.mergeQuotaPercentageHistory(previousHistory, payload.quotaPercentageHistory));
+      }
+      const cleanPayload = { ...payload };
+      delete cleanPayload.quotaPercentageHistory;
       const existing = await this.state.storage.get(`dev:${deviceId}`);
-      const record = mergeDeviceRecord(existing, { ...payload, receivedAt: new Date().toISOString() });
+      const record = mergeDeviceRecord(existing, { ...cleanPayload, receivedAt: new Date().toISOString() });
       await this.state.storage.put(`dev:${record.deviceId}`, record);
       this.broadcast('ingest').catch(() => {});
       return jsonResponse(200, { ok: true, deviceId: record.deviceId, stats: await this.statsWithSubscriptionVersion() });

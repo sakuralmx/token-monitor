@@ -17,6 +17,7 @@ function createAgentDeviceRuntime(options = {}, deps = {}, overrides = {}) {
     limitsOptions: options.limitsOptions,
     usageOptions: overrides.usageOptions || options.usageOptions,
     transformUsage: options.transformUsage,
+    transformRecord: options.transformRecord,
     sink,
     onRecord: overrides.onRecord || options.onRecord,
     onError: options.onError

@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { defaultDeviceId, loadDotEnv, parseArgs, pidFilePath } = require('../shared/config');
+const { defaultDeviceId, loadDotEnv, parseArgs, pidFilePath, readJson, sharedDataDir, writeJsonAtomic } = require('../shared/config');
 const { appVersion } = require('../shared/appVersion');
 const { clientsCsvForSetting } = require('../shared/clientTracking');
 const { normalizeHistoryIntervalMs } = require('../shared/collector');
@@ -13,6 +13,7 @@ const {
   parseLimitProviders
 } = require('../shared/limitCollector');
 const { postSyncPayload } = require('../shared/syncPayload');
+const { normalizeQuotaPercentageHistory, observeQuotaPercentages, quotaHistoryChunks } = require('../shared/quotaPercentageHistory');
 const { applyProjectRollups } = require('../shared/usage');
 const { runCatalogSync } = require('../shared/catalogSyncRuntime');
 const { scanCherryStudioSessions } = require('../shared/cherryStudioSessions');
@@ -99,6 +100,19 @@ const limitsOptions = {
   opencodeCookie
 };
 let sessionUsageArchive;
+const quotaHistoryFile = path.join(sharedDataDir(), 'quota-percentage-history.json');
+let quotaPercentageHistory = normalizeQuotaPercentageHistory(readJson(quotaHistoryFile, {}));
+const quotaCursorFile = path.join(sharedDataDir(), 'quota-history-upload-cursor.json');
+let quotaHistoryUploadCursor = readJson(quotaCursorFile, {}) || {};
+
+function recordQuotaPercentageHistory(record) {
+  const next = observeQuotaPercentages(quotaPercentageHistory, record);
+  if (!dryRun && JSON.stringify(next) !== JSON.stringify(quotaPercentageHistory)) {
+    writeJsonAtomic(quotaHistoryFile, next);
+  }
+  quotaPercentageHistory = next;
+  return Object.keys(next).length ? { ...record, quotaPercentageHistory: next } : record;
+}
 
 function summaryWithSessionUsageArchive(summary, now = new Date()) {
   let visibleSummary = summary;
@@ -121,6 +135,20 @@ function summaryWithSessionUsageArchive(summary, now = new Date()) {
   return projectsEnabled ? applyProjectRollups(visibleSummary) : visibleSummary;
 }
 
+async function postQuotaHistory(history) {
+  for (const chunk of quotaHistoryChunks(history, quotaHistoryUploadCursor)) {
+    const response = await fetch(`${hubUrl}/api/quota-history`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(secret ? { authorization: `Bearer ${secret}` } : {}) },
+      body: JSON.stringify({ history: { [chunk.provider]: { accounts: { [chunk.accountKey]: { accountKey: chunk.accountKey, observations: chunk.observations } } } } })
+    });
+    if (!response.ok) throw new Error(`Hub quota history ${response.status}`);
+    const prior = Array.isArray(quotaHistoryUploadCursor?.[chunk.provider]?.[chunk.accountKey]) ? quotaHistoryUploadCursor[chunk.provider][chunk.accountKey] : [];
+    quotaHistoryUploadCursor = { ...quotaHistoryUploadCursor, [chunk.provider]: { ...(quotaHistoryUploadCursor[chunk.provider] || {}), [chunk.accountKey]: [...new Set([...prior, ...chunk.observations.map((row) => row.at)])] } };
+    if (!dryRun) writeJsonAtomic(quotaCursorFile, quotaHistoryUploadCursor);
+  }
+}
+
 async function postUsage(summary) {
   const { response } = await postSyncPayload(fetch, `${hubUrl}/api/ingest`, {
     headers: { 'content-type': 'application/json', ...(secret ? { authorization: `Bearer ${secret}` } : {}) },
@@ -128,6 +156,7 @@ async function postUsage(summary) {
     logger: (message) => console.warn(`[sync] ${message}`)
   });
   if (!response.ok) throw new Error(`Hub responded ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  if (summary.quotaPercentageHistory) await postQuotaHistory(summary.quotaPercentageHistory);
   return response.json();
 }
 
@@ -215,6 +244,7 @@ async function main() {
     usageOptions,
     limitsOptions,
     transformUsage: summaryWithSessionUsageArchive,
+    transformRecord: recordQuotaPercentageHistory,
     deliver,
     dryRun,
     onRuntime: (runtime) => { runtimeHandle = runtime; },

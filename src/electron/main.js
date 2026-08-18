@@ -69,7 +69,8 @@ const { createDeviceRuntime } = require('../shared/deviceRuntime');
 const {
   migrateLegacyQuotaHistory,
   normalizeQuotaPercentageHistory,
-  observeQuotaPercentages
+  observeQuotaPercentages,
+  quotaHistoryChunks
 } = require('../shared/quotaPercentageHistory');
 const { createDiagnosticJournal } = require('../shared/diagnosticJournal');
 const { createDiagnosticReportGenerator } = require('./diagnostics');
@@ -502,6 +503,7 @@ function defaultSettings() {
     // audit data, not a token-capacity estimate, and is recorded by the main
     // process even when no renderer is open.
     quotaPercentageHistory: {},
+    quotaHistoryUploadCursor: {},
     // Manual subscription metadata. Plain preferences, not credentials, so they
     // live in settings.json and cross to the renderer unredacted.
     subscriptions: [],
@@ -2846,6 +2848,24 @@ async function deleteDeviceFromHub(deviceId) {
   if (!response.ok && response.status !== 404) throw new Error(`DELETE ${response.status}`);
 }
 
+async function postQuotaHistoryToHub(history, hubUrl, secret) {
+  // Bounded chunks keep this independent data plane below the shared body cap;
+  // the Hub merges each chunk idempotently by account and timestamp.
+  const cursor = settings.quotaHistoryUploadCursor || {};
+  for (const chunk of quotaHistoryChunks(history, cursor)) {
+    const response = await fetch(`${hubUrl.replace(/\/$/, '')}/api/quota-history`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(secret ? { authorization: `Bearer ${secret}` } : {}) },
+      body: JSON.stringify({ history: { [chunk.provider]: { accounts: { [chunk.accountKey]: { accountKey: chunk.accountKey, observations: chunk.observations } } } } })
+    });
+    if (!response.ok) throw new Error(`quota history ${response.status}`);
+    const prior = Array.isArray(cursor?.[chunk.provider]?.[chunk.accountKey]) ? cursor[chunk.provider][chunk.accountKey] : [];
+    cursor[chunk.provider] = { ...(cursor[chunk.provider] || {}), [chunk.accountKey]: [...new Set([...prior, ...chunk.observations.map((row) => row.at)])] };
+    settings.quotaHistoryUploadCursor = cursor;
+    saveSettings();
+  }
+}
+
 async function postToHub(summary) {
   const { url: hubUrl, secret } = effectiveHubConfig();
   if (!hubUrl) throw new Error('hub not configured');
@@ -2861,6 +2881,7 @@ async function postToHub(summary) {
     logger: (message) => console.log(`[sync] ${message}`)
   });
   if (!response.ok) throw new Error(`Hub ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  if (summary.quotaPercentageHistory) await postQuotaHistoryToHub(summary.quotaPercentageHistory, hubUrl, secret);
   if (settings.lastPostedDeviceId !== summary.deviceId) {
     settings.lastPostedDeviceId = summary.deviceId;
     saveSettings();

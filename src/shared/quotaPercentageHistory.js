@@ -1,18 +1,15 @@
 'use strict';
 
 const PROVIDERS = Object.freeze(['codex', 'opencode']);
-
-function number(value, fallback = 0) {
-  return Number.isFinite(Number(value)) ? Number(value) : fallback;
-}
+const num = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 
 function tokenComponents(period, { client, provider } = {}) {
   const id = String(provider || client || '').trim().toLowerCase();
   const prefix = provider ? 'provider' : 'client';
-  const total = Math.max(0, number(period?.[`${prefix}Tokens`]?.[id] ?? period?.clients?.[id]));
-  const cacheRead = Math.min(total, Math.max(0, number(period?.[`${prefix}CacheReads`]?.[id])));
-  const cacheWrite = Math.min(total - cacheRead, Math.max(0, number(period?.[`${prefix}CacheWrites`]?.[id])));
-  const output = Math.min(total - cacheRead - cacheWrite, Math.max(0, number(period?.[`${prefix}Outputs`]?.[id])));
+  const total = Math.max(0, num(period?.[`${prefix}Tokens`]?.[id] ?? period?.clients?.[id]));
+  const cacheRead = Math.min(total, Math.max(0, num(period?.[`${prefix}CacheReads`]?.[id])));
+  const cacheWrite = Math.min(total - cacheRead, Math.max(0, num(period?.[`${prefix}CacheWrites`]?.[id])));
+  const output = Math.min(total - cacheRead - cacheWrite, Math.max(0, num(period?.[`${prefix}Outputs`]?.[id])));
   return { input: Math.max(0, total - cacheRead - cacheWrite - output), cacheRead, cacheWrite, output };
 }
 
@@ -21,162 +18,139 @@ function normalizeObservation(value) {
   const remainingPercent = Number(value.remainingPercent);
   const atMs = Date.parse(value.at || '');
   if (!Number.isFinite(remainingPercent) || remainingPercent < 0 || remainingPercent > 100 || !Number.isFinite(atMs)) return null;
-  const resetsAtMs = value.resetsAt ? Date.parse(value.resetsAt) : NaN;
-  const sourceComponents = value.components && typeof value.components === 'object' ? value.components : {};
+  const resetMs = value.resetsAt ? Date.parse(value.resetsAt) : NaN;
+  const source = value.components && typeof value.components === 'object' ? value.components : {};
   return {
     remainingPercent,
     at: new Date(atMs).toISOString(),
-    resetsAt: Number.isFinite(resetsAtMs) ? new Date(resetsAtMs).toISOString() : null,
-    components: Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output']
-      .map((key) => [key, Math.max(0, number(sourceComponents[key]))]))
+    resetsAt: Number.isFinite(resetMs) ? new Date(resetMs).toISOString() : null,
+    components: Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => [key, Math.max(0, num(source[key]))]))
   };
 }
 
 function compactObservations(values) {
-  const sorted = [...new Map(values.map((row) => [row.at, row])).values()]
-    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const sorted = [...new Map(values.map((row) => [row.at, row])).values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   if (sorted.length < 3) return sorted;
   const compacted = [sorted[0]];
-  for (let index = 1; index < sorted.length - 1; index += 1) {
-    const previous = sorted[index - 1];
-    const current = sorted[index];
-    const next = sorted[index + 1];
-    // A run of an unchanged official percentage needs only its first and last
-    // confirmation. Keeping both bounds preserves when the plateau began and
-    // how long it was last known to continue, while discarding redundant polls.
-    if (previous.remainingPercent === current.remainingPercent
-      && current.remainingPercent === next.remainingPercent) continue;
-    compacted.push(current);
+  for (let i = 1; i < sorted.length - 1; i += 1) {
+    if (sorted[i - 1].remainingPercent === sorted[i].remainingPercent && sorted[i].remainingPercent === sorted[i + 1].remainingPercent) continue;
+    compacted.push(sorted[i]);
   }
   compacted.push(sorted.at(-1));
   return compacted;
 }
 
-function normalizeProviderHistory(value) {
-  if (!value || typeof value !== 'object') return null;
-  const accountKey = String(value.accountKey || '').trim().slice(0, 256);
-  const observations = compactObservations((Array.isArray(value.observations) ? value.observations : [])
-    .map(normalizeObservation).filter(Boolean));
-  if (!accountKey || observations.length === 0) return null;
-  return {
-    version: 1,
-    accountKey,
-    updatedAt: observations.at(-1).at,
-    observations
-  };
+function normalizeAccount(value, fallbackKey = '') {
+  const accountKey = String(value?.accountKey || fallbackKey || '').trim().slice(0, 256);
+  const observations = compactObservations((Array.isArray(value?.observations) ? value.observations : []).map(normalizeObservation).filter(Boolean));
+  return accountKey && observations.length ? { version: 1, accountKey, updatedAt: observations.at(-1).at, observations } : null;
 }
 
 function normalizeQuotaPercentageHistory(value) {
   const source = value && typeof value === 'object' ? value : {};
-  const normalized = {};
+  const out = {};
+  for (const provider of PROVIDERS) {
+    const accounts = {};
+    if (source[provider]?.accounts && typeof source[provider].accounts === 'object') {
+      for (const [key, raw] of Object.entries(source[provider].accounts)) {
+        const account = normalizeAccount(raw, key);
+        if (account) accounts[account.accountKey] = account;
+      }
+    } else {
+      const account = normalizeAccount(source[provider]);
+      if (account) accounts[account.accountKey] = account;
+    }
+    if (Object.keys(accounts).length) out[provider] = { accounts };
+  }
   const pending = {};
   for (const provider of PROVIDERS) {
-    const history = normalizeProviderHistory(source[provider]);
-    if (history) normalized[provider] = history;
-    const observations = compactObservations((Array.isArray(source.pending?.[provider]) ? source.pending[provider] : [])
-      .map(normalizeObservation).filter(Boolean));
-    if (observations.length) pending[provider] = observations;
+    const rows = compactObservations((Array.isArray(source.pending?.[provider]) ? source.pending[provider] : []).map(normalizeObservation).filter(Boolean));
+    if (rows.length) pending[provider] = rows;
   }
-  if (Object.keys(pending).length) normalized.pending = pending;
-  return normalized;
+  if (Object.keys(pending).length) out.pending = pending;
+  return out;
+}
+
+function mergeQuotaPercentageHistory(existing, incoming) {
+  const left = normalizeQuotaPercentageHistory(existing);
+  const right = normalizeQuotaPercentageHistory(incoming);
+  const out = normalizeQuotaPercentageHistory(left);
+  for (const provider of PROVIDERS) {
+    const accounts = { ...(out[provider]?.accounts || {}) };
+    for (const [key, account] of Object.entries(right[provider]?.accounts || {})) {
+      const observations = compactObservations([...(accounts[key]?.observations || []), ...account.observations]);
+      accounts[key] = { version: 1, accountKey: key, updatedAt: observations.at(-1).at, observations };
+    }
+    if (Object.keys(accounts).length) out[provider] = { accounts };
+  }
+  const pending = {};
+  for (const provider of PROVIDERS) {
+    const rows = compactObservations([...(left.pending?.[provider] || []), ...(right.pending?.[provider] || [])]);
+    if (rows.length) pending[provider] = rows;
+  }
+  if (Object.keys(pending).length) out.pending = pending;
+  else delete out.pending;
+  return out;
 }
 
 function migrateLegacyQuotaHistory(value, existing = {}) {
-  const legacy = value && typeof value === 'object' ? value : {};
-  const migrated = { ...normalizeQuotaPercentageHistory(existing) };
-  const pending = existing?.pending && typeof existing.pending === 'object' ? { ...existing.pending } : {};
-  const pairs = [
-    ['codex', legacy.calibration, legacy.accountKey],
-    ['opencode', legacy.opencodeCalibration, legacy.opencodeAccountKey]
-  ];
-  for (const [provider, calibration, fallbackAccountKey] of pairs) {
-    if (migrated[provider] || !calibration || typeof calibration !== 'object') continue;
-    const observations = compactObservations((Array.isArray(calibration.observations) ? calibration.observations : [])
-      .map(normalizeObservation).filter(Boolean));
-    const accountKey = String(calibration.accountKey || fallbackAccountKey || '').trim().slice(0, 256);
-    if (accountKey && observations.length) migrated[provider] = { version: 1, accountKey, updatedAt: observations.at(-1).at, observations };
-    else if (observations.length) pending[provider] = observations;
+  let out = normalizeQuotaPercentageHistory(existing);
+  for (const [provider, calibration, fallbackKey] of [['codex', value?.calibration, value?.accountKey], ['opencode', value?.opencodeCalibration, value?.opencodeAccountKey]]) {
+    if (!calibration || typeof calibration !== 'object') continue;
+    const observations = compactObservations((Array.isArray(calibration.observations) ? calibration.observations : []).map(normalizeObservation).filter(Boolean));
+    if (!observations.length) continue;
+    const accountKey = String(calibration.accountKey || fallbackKey || '').trim().slice(0, 256);
+    if (accountKey) out = mergeQuotaPercentageHistory(out, { [provider]: { accounts: { [accountKey]: { accountKey, observations } } } });
+    else {
+      out.pending = out.pending || {};
+      out.pending[provider] = compactObservations([...(out.pending[provider] || []), ...observations]);
+    }
   }
-  if (Object.keys(pending).length) migrated.pending = pending;
-  return migrated;
+  return out;
 }
 
 function quotaWindow(provider) {
-  const windows = (Array.isArray(provider?.windows) ? provider.windows : [])
-    .filter((window) => window?.source !== 'local' && Number.isFinite(Number(window?.remainingPercent)));
-  return windows.find((window) => window?.kind === 'weekly') || windows[0] || null;
+  const windows = (Array.isArray(provider?.windows) ? provider.windows : []).filter((row) => row?.source !== 'local' && Number.isFinite(Number(row?.remainingPercent)));
+  return windows.find((row) => row.kind === 'weekly') || windows[0] || null;
 }
 
 function appendObservation(history, providerId, provider, period, at) {
   const window = quotaWindow(provider);
   const accountKey = String(provider?.accountKey || '').trim().slice(0, 256);
   const atMs = Date.parse(at || '');
-  if (!window || !accountKey || !Number.isFinite(atMs)) return history;
-  const previous = normalizeProviderHistory(history?.[providerId]);
-  const pending = (Array.isArray(history?.pending?.[providerId]) ? history.pending[providerId] : [])
-    .map(normalizeObservation).filter(Boolean);
-  const observation = normalizeObservation({
-    remainingPercent: window.remainingPercent,
-    at: new Date(atMs).toISOString(),
-    resetsAt: window.resetsAt,
-    components: providerId === 'opencode'
-      ? tokenComponents(period, { provider: 'opencode-go' })
-      : tokenComponents(period, { client: 'codex' })
-  });
-  if (!observation) return history;
-  const prior = previous?.accountKey === accountKey ? previous.observations : pending;
-  const last = prior.at(-1);
-  if (last?.at === observation.at && previous?.accountKey === accountKey) return history;
-  const observations = compactObservations(last?.at === observation.at ? prior : [...prior, observation]);
-  const next = { ...history, [providerId]: { version: 1, accountKey, updatedAt: observations.at(-1).at, observations } };
-  if (next.pending) {
-    next.pending = { ...next.pending };
-    delete next.pending[providerId];
-    if (!Object.keys(next.pending).length) delete next.pending;
-  }
-  return next;
+  if (!window || !accountKey || !Number.isFinite(atMs)) return normalizeQuotaPercentageHistory(history);
+  const out = normalizeQuotaPercentageHistory(history);
+  const accounts = { ...(out[providerId]?.accounts || {}) };
+  const observation = normalizeObservation({ remainingPercent: window.remainingPercent, at: new Date(atMs).toISOString(), resetsAt: window.resetsAt,
+    components: providerId === 'opencode' ? tokenComponents(period, { provider: 'opencode-go' }) : tokenComponents(period, { client: 'codex' }) });
+  const observations = compactObservations([...(accounts[accountKey]?.observations || []), ...(out.pending?.[providerId] || []), observation]);
+  accounts[accountKey] = { version: 1, accountKey, updatedAt: observations.at(-1).at, observations };
+  out[providerId] = { accounts };
+  if (out.pending?.[providerId]) { delete out.pending[providerId]; if (!Object.keys(out.pending).length) delete out.pending; }
+  return out;
 }
 
 function observeQuotaPercentages(history, record) {
-  let next = normalizeQuotaPercentageHistory(history);
-  if (history?.pending && typeof history.pending === 'object') next.pending = { ...history.pending };
-  const providers = Array.isArray(record?.limits?.providers) ? record.limits.providers : [];
+  let out = normalizeQuotaPercentageHistory(history);
   const period = record?.allTime || record?.periods?.allTime || {};
   const fallbackAt = record?.limits?.updatedAt || record?.updatedAt || new Date().toISOString();
-  const codex = providers.find((provider) => provider?.provider === 'codex' && provider?.status === 'ok');
-  const opencode = providers.find((provider) => provider?.provider === 'opencode' && provider?.status === 'ok'
-    && (provider?.accountLabel === 'Go' || provider?.planLabel === 'Go'));
-  if (codex) next = appendObservation(next, 'codex', codex, period, codex.updatedAt || fallbackAt);
-  if (opencode) next = appendObservation(next, 'opencode', opencode, period, opencode.updatedAt || fallbackAt);
-  return next;
-}
-
-function mergeQuotaPercentageHistory(existing, incoming) {
-  const left = normalizeQuotaPercentageHistory(existing);
-  const right = normalizeQuotaPercentageHistory(incoming);
-  const merged = { ...left };
-  for (const provider of PROVIDERS) {
-    if (!right[provider]) continue;
-    if (!left[provider] || left[provider].accountKey !== right[provider].accountKey) {
-      if (!left[provider] || Date.parse(right[provider].updatedAt) >= Date.parse(left[provider].updatedAt)) merged[provider] = right[provider];
-      continue;
-    }
-    const byTimestamp = new Map(left[provider].observations.map((row) => [row.at, row]));
-    for (const row of right[provider].observations) byTimestamp.set(row.at, row);
-    const observations = compactObservations([...byTimestamp.values()]);
-    merged[provider] = { version: 1, accountKey: left[provider].accountKey, updatedAt: observations.at(-1).at, observations };
+  for (const provider of record?.limits?.providers || []) {
+    if (provider?.status !== 'ok') continue;
+    if (provider.provider === 'codex') out = appendObservation(out, 'codex', provider, period, provider.updatedAt || fallbackAt);
+    if (provider.provider === 'opencode' && (provider.accountLabel === 'Go' || provider.planLabel === 'Go')) out = appendObservation(out, 'opencode', provider, period, provider.updatedAt || fallbackAt);
   }
-  return merged;
+  return out;
 }
 
-module.exports = {
-  appendObservation,
-  compactObservations,
-  mergeQuotaPercentageHistory,
-  migrateLegacyQuotaHistory,
-  normalizeObservation,
-  normalizeProviderHistory,
-  normalizeQuotaPercentageHistory,
-  observeQuotaPercentages,
-  tokenComponents
-};
+function quotaHistoryChunks(history, cursor = {}, chunkSize = 200) {
+  const chunks = [];
+  const normalized = normalizeQuotaPercentageHistory(history);
+  for (const provider of PROVIDERS) for (const [accountKey, account] of Object.entries(normalized[provider]?.accounts || {})) {
+    const sent = new Set(Array.isArray(cursor?.[provider]?.[accountKey]) ? cursor[provider][accountKey] : []);
+    const rows = account.observations.filter((row) => !sent.has(row.at));
+    for (let i = 0; i < rows.length; i += chunkSize) chunks.push({ provider, accountKey, observations: rows.slice(i, i + chunkSize) });
+  }
+  return chunks;
+}
+
+module.exports = { appendObservation, compactObservations, mergeQuotaPercentageHistory, migrateLegacyQuotaHistory, normalizeObservation, normalizeQuotaPercentageHistory, observeQuotaPercentages, quotaHistoryChunks, tokenComponents };

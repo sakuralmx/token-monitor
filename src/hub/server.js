@@ -16,6 +16,7 @@ const { currentHubBuild } = require('../shared/hubBuildIdentity');
 const { isAuthorized, readJsonBody, sendJson, sendText } = require('../shared/http');
 const { loadDotEnv, parseArgs, projectRoot, readJson, writeJsonAtomic } = require('../shared/config');
 const { createCatalogStore } = require('../shared/catalogStore');
+const { mergeQuotaPercentageHistory, normalizeQuotaPercentageHistory } = require('../shared/quotaPercentageHistory');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -44,6 +45,14 @@ function createHub({
   // of them, so they sit beside the device map rather than inside it.
   if (!store.subscriptions || typeof store.subscriptions !== 'object') {
     store.subscriptions = emptySubscriptionDocument();
+  }
+  store.quotaPercentageHistory = normalizeQuotaPercentageHistory(store.quotaPercentageHistory);
+  // Migrate early device-embedded history into the hub-scoped account timeline.
+  for (const device of Object.values(store.devices)) {
+    if (device?.quotaPercentageHistory) {
+      store.quotaPercentageHistory = mergeQuotaPercentageHistory(store.quotaPercentageHistory, device.quotaPercentageHistory);
+      delete device.quotaPercentageHistory;
+    }
   }
   const bindHost = resolveBindHost(host, secret);
 
@@ -119,9 +128,23 @@ function createHub({
     if (!payload || (!payload.deviceId && !payload.id)) {
       throw new Error('deviceId_required');
     }
-    const record = mergeDeviceRecord(store.devices[String(payload.deviceId || payload.id)], { ...payload, receivedAt: new Date().toISOString() });
+    const previousHistory = store.quotaPercentageHistory;
+    const deviceKey = String(payload.deviceId || payload.id);
+    const previousDevice = store.devices[deviceKey];
+    if (payload.quotaPercentageHistory) {
+      store.quotaPercentageHistory = mergeQuotaPercentageHistory(store.quotaPercentageHistory, payload.quotaPercentageHistory);
+    }
+    const cleanPayload = { ...payload };
+    delete cleanPayload.quotaPercentageHistory;
+    const record = mergeDeviceRecord(previousDevice, { ...cleanPayload, receivedAt: new Date().toISOString() });
     store.devices[record.deviceId] = record;
-    persist();
+    try { persist(); }
+    catch (error) {
+      store.quotaPercentageHistory = previousHistory;
+      if (previousDevice) store.devices[deviceKey] = previousDevice;
+      else delete store.devices[deviceKey];
+      throw error;
+    }
     broadcastStats('ingest');
     return record;
   }
@@ -218,6 +241,22 @@ function createHub({
     if (req.method === 'GET' && url.pathname === '/api/stats') return sendJson(res, 200, getStats());
     if (req.method === 'GET' && url.pathname === '/api/devices') return sendJson(res, 200, { devices: getDevices() });
     if (req.method === 'GET' && url.pathname === '/api/history') return sendJson(res, 200, getHistory());
+    if (req.method === 'GET' && url.pathname === '/api/quota-history') {
+      return sendJson(res, 200, { ok: true, history: store.quotaPercentageHistory });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/quota-history') {
+      try {
+        const payload = await readJsonBody(req);
+        const previous = store.quotaPercentageHistory;
+        store.quotaPercentageHistory = mergeQuotaPercentageHistory(previous, payload?.history);
+        try { persist(); }
+        catch (error) { store.quotaPercentageHistory = previous; throw error; }
+        return sendJson(res, 200, { ok: true });
+      } catch (error) {
+        if (error.code === 'payload_too_large') return sendJson(res, 413, { error: 'payload_too_large' });
+        return sendJson(res, 400, { error: 'bad_request', message: error.message });
+      }
+    }
 
     if (req.method === 'GET' && url.pathname === '/api/stats/stream') {
       res.writeHead(200, {

@@ -127,8 +127,8 @@ test('quota percentage histories normalize and merge independently on Node and W
       codex: { accountKey: 'c', observations: [observation('2026-08-18T02:00:00Z', 40)] }
     }
   });
-  assert.deepEqual(merged.quotaPercentageHistory.codex.observations.map((row) => row.remainingPercent), [50, 40]);
-  assert.equal(merged.quotaPercentageHistory.opencode.observations[0].remainingPercent, 60);
+  assert.deepEqual(merged.quotaPercentageHistory.codex.accounts.c.observations.map((row) => row.remainingPercent), [50, 40]);
+  assert.equal(merged.quotaPercentageHistory.opencode.accounts.o.observations[0].remainingPercent, 60);
 });
 
 test('limits updates publish retained usage and history without a renderer', () => {

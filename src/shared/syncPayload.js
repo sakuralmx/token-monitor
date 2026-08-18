@@ -229,7 +229,14 @@ function serializeSyncPayload(summary, options = {}) {
     omitAllTimeProjects: options.omitAllTimeProjects === true,
     omitHistoryTokenComponents: options.omitHistoryTokenComponents === true
   };
-  let payload = buildSyncPayload(summary, buildOptions);
+  const build = () => {
+    const next = buildSyncPayload(summary, buildOptions);
+    // Long-lived quota observations use their own authenticated data plane. They
+    // must never make ordinary usage/limits ingest grow without bound.
+    if (next && typeof next === 'object') delete next.quotaPercentageHistory;
+    return next;
+  };
+  let payload = build();
   if (!payload || typeof payload !== 'object') {
     const body = JSON.stringify(payload);
     return { payload, body, bytes: body ? Buffer.byteLength(body, 'utf8') : 0 };
@@ -239,7 +246,7 @@ function serializeSyncPayload(summary, options = {}) {
     // Component detail is additive. Never let it evict an existing project/session
     // payload or turn a previously uploadable History V1 record into a 413.
     buildOptions.omitHistoryTokenComponents = true;
-    payload = buildSyncPayload(summary, buildOptions);
+    payload = build();
     body = JSON.stringify(payload);
   }
   if (
@@ -248,7 +255,7 @@ function serializeSyncPayload(summary, options = {}) {
     && projectEntries(payload?.allTime) > 0
   ) {
     buildOptions.omitAllTimeProjects = true;
-    payload = buildSyncPayload(summary, buildOptions);
+    payload = build();
     body = JSON.stringify(payload);
   }
   if (Buffer.byteLength(body, 'utf8') > maxBytes) {
