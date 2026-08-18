@@ -72,10 +72,15 @@ function normalizeProviderHistory(value) {
 function normalizeQuotaPercentageHistory(value) {
   const source = value && typeof value === 'object' ? value : {};
   const normalized = {};
+  const pending = {};
   for (const provider of PROVIDERS) {
     const history = normalizeProviderHistory(source[provider]);
     if (history) normalized[provider] = history;
+    const observations = compactObservations((Array.isArray(source.pending?.[provider]) ? source.pending[provider] : [])
+      .map(normalizeObservation).filter(Boolean));
+    if (observations.length) pending[provider] = observations;
   }
+  if (Object.keys(pending).length) normalized.pending = pending;
   return normalized;
 }
 
@@ -89,8 +94,8 @@ function migrateLegacyQuotaHistory(value, existing = {}) {
   ];
   for (const [provider, calibration, fallbackAccountKey] of pairs) {
     if (migrated[provider] || !calibration || typeof calibration !== 'object') continue;
-    const observations = (Array.isArray(calibration.observations) ? calibration.observations : [])
-      .map(normalizeObservation).filter(Boolean);
+    const observations = compactObservations((Array.isArray(calibration.observations) ? calibration.observations : [])
+      .map(normalizeObservation).filter(Boolean));
     const accountKey = String(calibration.accountKey || fallbackAccountKey || '').trim().slice(0, 256);
     if (accountKey && observations.length) migrated[provider] = { version: 1, accountKey, updatedAt: observations.at(-1).at, observations };
     else if (observations.length) pending[provider] = observations;

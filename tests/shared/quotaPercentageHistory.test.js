@@ -91,6 +91,32 @@ test('keeps both plateau bounds and the first changed percentage', () => {
   assert.deepEqual(normalized.codex.observations.map((row) => row.remainingPercent), [75, 75, 74]);
 });
 
+test('sorts, deduplicates, and compacts legacy observations before deriving migration state', () => {
+  const observation = (at, remainingPercent) => ({ at, remainingPercent, components: {} });
+  const legacy = quota.migrateLegacyQuotaHistory({
+    calibration: { accountKey: 'codex-account', observations: [
+      observation('2026-08-18T03:00:00Z', 75),
+      observation('2026-08-18T01:00:00Z', 75),
+      observation('2026-08-18T02:00:00Z', 75),
+      observation('2026-08-18T01:00:00Z', 75)
+    ] },
+    opencodeCalibration: { observations: [
+      observation('2026-08-18T03:00:00Z', 80),
+      observation('2026-08-18T01:00:00Z', 80),
+      observation('2026-08-18T02:00:00Z', 80)
+    ] }
+  });
+  assert.deepEqual(legacy.codex.observations.map((row) => row.at), [
+    '2026-08-18T01:00:00.000Z',
+    '2026-08-18T03:00:00.000Z'
+  ]);
+  assert.equal(legacy.codex.updatedAt, '2026-08-18T03:00:00.000Z');
+  assert.deepEqual(legacy.pending.opencode.map((row) => row.at), [
+    '2026-08-18T01:00:00.000Z',
+    '2026-08-18T03:00:00.000Z'
+  ]);
+});
+
 test('migrates account-less legacy observations and binds them on the next provider refresh', () => {
   const legacy = quota.migrateLegacyQuotaHistory({
     calibration: { observations: [{ remainingPercent: 70, at: '2026-08-17T00:00:00Z', components: {} }] },
