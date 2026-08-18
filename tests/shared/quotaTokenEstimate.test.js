@@ -33,6 +33,19 @@ test('quota sync follows the device that supplied the visible Codex limit across
   ], { accountKey: 'sha256:keychain-hash', sourceDeviceId: 'windows' });
   assert.equal(selected.accountKey, 'sha256:path-hash');
 });
+test('OpenCode selects only its provider-keyed quota snapshot', () => {
+  const observation = (at) => ({ remainingPercent: 50, localEquivalent: 100, components: {}, at });
+  const snapshot = (accountKey, at) => ({ accountKey, updatedAt: at, calibration: { observations: [observation(at)], last: observation(at) } });
+  const selected = quota.selectSyncSnapshot([{
+    deviceId: 'machine',
+    quotaTokenEstimate: snapshot('codex-account', '2026-08-17T00:00:00Z'),
+    quotaTokenEstimates: { opencode: snapshot('go-account', '2026-08-18T00:00:00Z') }
+  }], { provider: 'opencode', accountKey: 'go-account', sourceDeviceId: 'machine' });
+  assert.equal(selected.accountKey, 'go-account');
+  assert.equal(quota.selectSyncSnapshot([{
+    deviceId: 'machine', quotaTokenEstimate: snapshot('codex-account', '2026-08-17T00:00:00Z')
+  }], { provider: 'opencode', sourceDeviceId: 'machine' }), null);
+});
 test('projects raw token capacity using the current cache mix', () => {
   const result = quota.rawTokenProjection({ capacity: 1_000_000, remainingPercent: 60, reservePercent: 5, components: { input: 100, cacheRead: 900, cacheWrite: 0, output: 0 }, weights: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6 } });
   assert.equal(result.capacity, 5_263_158);
@@ -52,18 +65,34 @@ test('cumulative extrapolation drives capacity before any cycle closes', () => {
   assert.equal(result.capacity, 13_833_333);
   assert.equal(result.sourceKind, 'cumulative');
   assert.equal(result.samples, 0);
-  assert.equal(result.cacheHitPercent, 90);
+  // The cache mix now comes from the same active quota cycle as the capacity,
+  // rather than today's unrelated mix passed by the renderer.
+  assert.equal(result.cacheHitPercent, 45.8);
 });
-test('raw capacity cannot be lower than the active cycle consumption implies', () => {
+test('raw capacity cannot be lower than weighted active-cycle consumption implies', () => {
   const observations = [
     { remainingPercent: 75, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, resetsAt: 'active' },
-    { remainingPercent: 24, components: { input: 7_583_169, cacheRead: 173_528_704, cacheWrite: 0, output: 442_099 }, resetsAt: 'active' }
+    { remainingPercent: 24, components: { input: 7_583_169, cacheRead: 173_528_704, cacheWrite: 10_000, output: 442_099 }, resetsAt: 'active' }
   ];
-  const result = quota.rawCapacityFromObservations(observations, { input: 100, cacheRead: 100, cacheWrite: 0, output: 0 });
-  const consumed = 181_553_972;
-  assert.equal(result.capacity, Math.round(consumed * 100 / 51));
-  assert.ok(result.capacity > consumed);
-  assert.ok(Math.round(result.capacity * 24 / 100) > 0);
+  const weights = { input: 1, cacheRead: 0.2, cacheWrite: 1.5, output: 6 };
+  const result = quota.rawCapacityFromObservations(observations, {}, { weights });
+  const rawConsumed = 7_583_169 + 173_528_704 + 10_000 + 442_099;
+  const weightedConsumed = 7_583_169 + 173_528_704 * 0.2 + 10_000 * 1.5 + 442_099 * 6;
+  const consumedFloor = Math.max(rawConsumed, weightedConsumed);
+  assert.equal(result.capacity, Math.round(consumedFloor * 100 / 51));
+  assert.ok(result.capacity > consumedFloor);
+  assert.equal(result.cacheHitPercent, 95.6);
+});
+
+test('capacity inference responds to weights that charge above raw token count', () => {
+  const observations = [
+    { remainingPercent: 80, components: { input: 0, cacheRead: 0, output: 0 } },
+    { remainingPercent: 60, components: { input: 9_000, cacheRead: 0, output: 1_000 } }
+  ];
+  const cheapOutput = quota.rawCapacityFromObservations(observations, {}, { weights: { output: 1 } });
+  const chargedOutput = quota.rawCapacityFromObservations(observations, {}, { weights: { output: 6 } });
+  assert.equal(cheapOutput.capacity, 50_000);
+  assert.equal(chargedOutput.capacity, 75_000);
 });
 test('learns capacity from official percentage movement and local components', () => {
   let state = quota.advanceCalibration(null, { remainingPercent: 90, localEquivalent: 1000, at: '2026-08-14T00:00:00Z', resetsAt: '2026-08-18T00:00:00Z' });
@@ -152,6 +181,38 @@ test('a rolling resetsAt that advances every refresh does not shard one cycle', 
   assert.equal(cycles[0].rawTokens, 15000);
 });
 
+test('low-water reconciliation keeps Aug 14 and Aug 17 inside one quota cycle', () => {
+  const observations = [
+    { remainingPercent: 75, components: { input: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: 't1' },
+    { remainingPercent: 1, components: { input: 740_000 }, at: '2026-08-14T23:00:00Z', resetsAt: 't2' },
+    { remainingPercent: 5, components: { input: 750_000 }, at: '2026-08-17T00:00:00Z', resetsAt: 't3' },
+    { remainingPercent: 1, components: { input: 790_000 }, at: '2026-08-17T12:00:00Z', resetsAt: 't4' }
+  ];
+  const cycles = quota.cycleSummaries(observations);
+  assert.equal(cycles.length, 1);
+  assert.equal(cycles[0].startRemainingPercent, 75);
+  assert.equal(cycles[0].endRemainingPercent, 1);
+  assert.equal(cycles[0].rawTokens, 790_000);
+});
+
+test('a material refill below half still closes a cycle when sampling is late', () => {
+  const observations = [
+    { remainingPercent: 75, components: { input: 0 }, at: '2026-08-14T00:00:00Z' },
+    { remainingPercent: 1, components: { input: 740 }, at: '2026-08-14T23:00:00Z' },
+    { remainingPercent: 45, components: { input: 800 }, at: '2026-08-17T00:00:00Z' },
+    { remainingPercent: 1, components: { input: 1_240 }, at: '2026-08-17T12:00:00Z' }
+  ];
+  assert.equal(quota.cycleSummaries(observations).length, 2);
+});
+
+test('a small refill closes a cycle after a known reset deadline', () => {
+  const observations = [
+    { remainingPercent: 5, components: { input: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: '2026-08-15T00:00:00Z' },
+    { remainingPercent: 19, components: { input: 100 }, at: '2026-08-15T00:01:00Z', resetsAt: '2026-08-22T00:00:00Z' }
+  ];
+  assert.equal(quota.cycleSummaries(observations).length, 2);
+});
+
 test('a real percentage rebound still closes a cycle without a resetsAt change', () => {
   const observations = [
     { remainingPercent: 60, components: { input: 0, cacheRead: 0 }, at: '2026-08-14T00:00:00Z', resetsAt: 'same' },
@@ -163,6 +224,25 @@ test('a real percentage rebound still closes a cycle without a resetsAt change',
   assert.equal(cycles.length, 2);
   assert.equal(cycles[0].endRemainingPercent, 30);
   assert.equal(cycles[1].startRemainingPercent, 90);
+});
+
+test('one component rollback preserves positive consumption in the same interval', () => {
+  const cycles = quota.cycleSummaries([
+    { remainingPercent: 100, components: { input: 100, cacheRead: 100, output: 0 } },
+    { remainingPercent: 50, components: { input: 90, cacheRead: 300, output: 100 } }
+  ]);
+  assert.equal(cycles[0].components.input, 0);
+  assert.equal(cycles[0].components.cacheRead, 200);
+  assert.equal(cycles[0].components.output, 100);
+  assert.equal(cycles[0].rawTokens, 300);
+});
+
+test('a local counter rollback re-baselines tokens without claiming a provider reset', () => {
+  const first = { remainingPercent: 60, localEquivalent: 10_000, components: { input: 10_000 }, at: '2026-08-14T00:00:00Z' };
+  let state = quota.advanceCalibration(null, first);
+  state = quota.advanceCalibration(state, { remainingPercent: 55, localEquivalent: 1_000, components: { input: 1_000 }, at: '2026-08-15T00:00:00Z' });
+  assert.equal(quota.cycleSummaries(state.observations).length, 1);
+  assert.equal(state.first.at, new Date(first.at).toISOString());
 });
 
 test('clientComponents extracts a non-codex client when given its id', () => {

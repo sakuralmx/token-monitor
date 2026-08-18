@@ -13,6 +13,9 @@ test('Electron adds sanitized quota calibration to local, client, and host devic
   assert.equal((main.match(/summaryWithQuotaTokenEstimate\(summary\)/g) || []).length, 3);
   assert.match(main, /Object\.assign\(visibleSummary, summaryWithQuotaTokenEstimate\(visibleSummary\)\)/);
   assert.match(main, /normalizeSyncQuotaSnapshot\(\{/);
+  assert.match(main, /quotaTokenEstimates:/);
+  assert.match(main, /snapshotFor\('opencode', config\?\.opencodeCalibration\)/);
+  assert.match(main, /\{ \.\.\.settings\.quotaTokenEstimate, \.\.\.patch\.quotaTokenEstimate \}/);
 });
 
 test('quota rendering adopts the synced snapshot and labels aggregate usage as multi-device', () => {
@@ -20,6 +23,11 @@ test('quota rendering adopts the synced snapshot and labels aggregate usage as m
   assert.match(app, /advanceCalibration\(estimateConfig\.calibration/);
   assert.match(app, /多设备今日 Codex Token/);
   assert.doesNotMatch(app, /本机今日 Codex Token/);
+});
+
+test('quota cards persist provider calibration as partial settings patches', () => {
+  assert.match(app, /saveSettings\(\{ quotaTokenEstimate: \{ calibration \} \}\)/);
+  assert.match(app, /saveSettings\(\{ quotaTokenEstimate: \{ opencodeCalibration: next \} \}\)/);
 });
 
 test('quota card drops the redundant all-tools token, confidence, and filler copy', () => {
@@ -42,7 +50,9 @@ test('OpenCode Go renders a sibling quota card mirroring the GPT token capacity'
   assert.match(app, /OpenCode Go 额度趋势/);
   assert.match(app, /预估总容量/);
   assert.match(app, /预估剩余 Token/);
-  assert.match(app, /多设备今日 OpenCode Token/);
+  assert.doesNotMatch(app, /多设备今日 OpenCode Token/);
   assert.match(app, /opencodeCalibration/);
+  assert.match(app, /const calibration = estimateConfig\.opencodeCalibration \|\| null/);
+  assert.doesNotMatch(app, /estimateConfig\.opencodeCalibration \|\| estimateConfig\.calibration/);
   assert.match(app, /clientComponents\(state\.stats\?\.periods\?\.allTime, 'opencode'\)/);
 });

@@ -127,6 +127,39 @@ test('device records synchronize bounded Codex quota calibration and preserve it
   assert.equal(updated.quotaTokenEstimate.calibration.observations.length, 1);
 });
 
+test('provider-keyed quota snapshots merge per provider and survive limits-only omission', () => {
+  const observation = (at) => ({ remainingPercent: 50, localEquivalent: 100, components: {}, at });
+  const snapshot = (accountKey, at) => ({
+    accountKey, updatedAt: at,
+    calibration: { first: observation(at), last: observation(at), observations: [observation(at)] }
+  });
+  const existing = recordWithLimits({
+    quotaTokenEstimates: {
+      codex: snapshot('codex-old', '2026-05-27T00:00:00.000Z'),
+      opencode: snapshot('go-old', '2026-05-27T00:00:00.000Z')
+    }
+  });
+  const partial = mergeDeviceRecord(existing, {
+    deviceId: 'macbook', limitsOnly: true, updatedAt: '2026-05-27T00:01:00.000Z', limits: { providers: [] },
+    quotaTokenEstimates: { codex: snapshot('codex-new', '2026-05-27T00:01:00.000Z') }
+  });
+  assert.equal(partial.quotaTokenEstimates.codex.accountKey, 'codex-new');
+  assert.equal(partial.quotaTokenEstimates.opencode.accountKey, 'go-old');
+  const normalPartial = mergeDeviceRecord(existing, {
+    deviceId: 'macbook', updatedAt: '2026-05-27T00:01:00.000Z',
+    quotaTokenEstimates: { codex: snapshot('codex-normal', '2026-05-27T00:01:00.000Z') }
+  });
+  assert.equal(normalPartial.quotaTokenEstimates.codex.accountKey, 'codex-normal');
+  assert.equal(normalPartial.quotaTokenEstimates.opencode.accountKey, 'go-old');
+  const omitted = mergeDeviceRecord(partial, {
+    deviceId: 'macbook', limitsOnly: true, updatedAt: '2026-05-27T00:02:00.000Z', limits: { providers: [] }
+  });
+  assert.equal(omitted.quotaTokenEstimates.codex.accountKey, 'codex-new');
+  assert.equal(omitted.quotaTokenEstimates.opencode.accountKey, 'go-old');
+  const aggregate = aggregateDevices([omitted], 0);
+  assert.equal(aggregate.devices[0].quotaTokenEstimates.opencode.accountKey, 'go-old');
+});
+
 test('aggregateDevices does not let an orphaned stale device id override the current limits state', () => {
   const oldDevice = recordWithLimits({
     deviceId: 'old-device-id',

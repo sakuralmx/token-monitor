@@ -2349,22 +2349,33 @@ function summaryWithArchivedClientUsage(summary) {
 
 function summaryWithQuotaTokenEstimate(summary) {
   const config = settings?.quotaTokenEstimate;
-  const calibration = config?.calibration;
-  const provider = (summary?.limits?.providers || []).find((entry) => (
-    entry?.provider === 'codex' && entry?.status === 'ok' && entry?.accountKey
-  ));
-  const updatedAt = calibration?.last?.at;
-  const snapshot = normalizeSyncQuotaSnapshot({
-    version: 1,
-    accountKey: provider?.accountKey,
-    updatedAt,
-    capacity: config?.capacity,
-    reservePercent: config?.reservePercent,
-    weights: config?.weights,
-    calibration
-  });
-  if (!snapshot) return summary;
-  return { ...summary, quotaTokenEstimate: snapshot };
+  const providers = summary?.limits?.providers || [];
+  const snapshotFor = (providerId, calibration) => {
+    const provider = providers.find((entry) => (
+      entry?.provider === providerId && entry?.status === 'ok' && entry?.accountKey
+      && (providerId !== 'opencode' || entry?.accountLabel === 'Go')
+    ));
+    return normalizeSyncQuotaSnapshot({
+      version: 1,
+      accountKey: provider?.accountKey,
+      updatedAt: calibration?.last?.at,
+      capacity: config?.capacity,
+      reservePercent: config?.reservePercent,
+      weights: config?.weights,
+      calibration
+    });
+  };
+  const codex = snapshotFor('codex', config?.calibration);
+  const opencode = snapshotFor('opencode', config?.opencodeCalibration);
+  if (!codex && !opencode) return summary;
+  return {
+    ...summary,
+    ...(codex ? { quotaTokenEstimate: codex } : {}),
+    quotaTokenEstimates: {
+      ...(codex ? { codex } : {}),
+      ...(opencode ? { opencode } : {})
+    }
+  };
 }
 
 function applyMacActivationPolicy(state = {}) {
@@ -6253,7 +6264,9 @@ app.whenReady().then(() => {
       opencodeAmbientEnabled: parseBoolean(patch.opencodeAmbientEnabled ?? settings.opencodeAmbientEnabled, true),
       opencodeLocalLimitsEnabled: parseBoolean(patch.opencodeLocalLimitsEnabled ?? settings.opencodeLocalLimitsEnabled, false),
       showLimitUsed: parseBoolean(patch.showLimitUsed ?? settings.showLimitUsed, false),
-      quotaTokenEstimate: normalizeQuotaTokenEstimate(patch.quotaTokenEstimate ?? settings.quotaTokenEstimate),
+      quotaTokenEstimate: normalizeQuotaTokenEstimate(patch.quotaTokenEstimate !== undefined
+        ? { ...settings.quotaTokenEstimate, ...patch.quotaTokenEstimate }
+        : settings.quotaTokenEstimate),
       windowMaximized: parseBoolean(settings.windowMaximized, false),
       zoomFactor: clampZoom(patch.zoomFactor ?? settings.zoomFactor),
       ...normalizeTrayModeSettings({

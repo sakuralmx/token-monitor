@@ -864,6 +864,14 @@ function normalizeDeviceRecord(record) {
     const estimate = normalizeQuotaTokenEstimate(record.quotaTokenEstimate);
     if (estimate) normalized.quotaTokenEstimate = estimate;
   }
+  if (record.quotaTokenEstimates && typeof record.quotaTokenEstimates === 'object') {
+    const estimates = {};
+    for (const provider of ['codex', 'opencode']) {
+      const estimate = normalizeQuotaTokenEstimate(record.quotaTokenEstimates[provider]);
+      if (estimate) estimates[provider] = estimate;
+    }
+    if (Object.keys(estimates).length) normalized.quotaTokenEstimates = estimates;
+  }
   if (hasOwn(record, 'historyAvailable')) normalized.historyAvailable = record.historyAvailable === true;
   if (hasOwn(record, 'history')) {
     // An explicit null means History is disabled/unavailable. Preserve that
@@ -1089,6 +1097,15 @@ function mergeDeviceRecord(existing, incoming) {
     if (!hasOwn(normalizedIncoming, 'osName') && hasOwn(normalizedExisting, 'osName')) {
       normalizedIncoming.osName = normalizedExisting.osName;
     }
+  }
+  // Provider-keyed calibration is independently produced. A normal usage tick can
+  // temporarily lack one limits account just as a limits-only tick can, so merge
+  // this additive compatibility field per provider on every update.
+  if (hasOwn(normalizedExisting, 'quotaTokenEstimates')) {
+    normalizedIncoming.quotaTokenEstimates = {
+      ...normalizedExisting.quotaTokenEstimates,
+      ...(normalizedIncoming.quotaTokenEstimates || {})
+    };
   }
   if (!hasIncomingLimits) normalizedIncoming.limits = normalizedExisting.limits;
   else normalizedIncoming.limits = mergeDeviceLimits(normalizedExisting, normalizedIncoming);
@@ -1333,6 +1350,7 @@ function aggregateDevices(devices, staleAfterMs, nowMs = Date.now()) {
       ...(hasOwn(normalized, 'periodProjectsOmitted') ? { periodProjectsOmitted: normalized.periodProjectsOmitted } : {}),
       ...(hasOwn(normalized, 'syncUploadIntervalMs') ? { syncUploadIntervalMs: normalized.syncUploadIntervalMs } : {}),
       ...(hasOwn(normalized, 'quotaTokenEstimate') ? { quotaTokenEstimate: normalized.quotaTokenEstimate } : {}),
+      ...(hasOwn(normalized, 'quotaTokenEstimates') ? { quotaTokenEstimates: normalized.quotaTokenEstimates } : {}),
       ...(hasOwn(normalized, 'periodWindows') ? { periodWindows: normalized.periodWindows } : {}),
       periods: normalized.periods,
       limits: normalized.limits

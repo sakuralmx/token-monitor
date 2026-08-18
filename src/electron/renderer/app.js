@@ -5259,7 +5259,7 @@ function quotaCodexEstimateCard(entries) {
     const key = JSON.stringify(calibration);
     if (key !== quotaCalibrationSaveKey) {
       quotaCalibrationSaveKey = key;
-      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { ...config, capacity: estimateConfig.capacity, weights: estimateConfig.weights, calibration } }); }, 0);
+      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { calibration } }); }, 0);
     }
   }
   const card = document.createElement('div');
@@ -5305,7 +5305,9 @@ function quotaOpenCodeEstimateCard(entries) {
     weights: synced.weights,
     opencodeCalibration: synced.calibration
   } : config;
-  const calibration = estimateConfig.opencodeCalibration || estimateConfig.calibration;
+  // Provider histories are independent. Missing OpenCode history starts empty;
+  // never seed a Go estimate from the Codex subscription's observations.
+  const calibration = estimateConfig.opencodeCalibration || null;
   const official = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.allTime, capacity: 0, weights: estimateConfig.weights });
   const cumulativeComponents = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.allTime, 'opencode');
   const learned = window.quotaTokenEstimate.advanceCalibration(calibration, {
@@ -5320,7 +5322,7 @@ function quotaOpenCodeEstimateCard(entries) {
     const key = JSON.stringify(next);
     if (key !== quotaOpenCodeCalibrationSaveKey) {
       quotaOpenCodeCalibrationSaveKey = key;
-      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { ...config, capacity: estimateConfig.capacity, weights: estimateConfig.weights, opencodeCalibration: next } }); }, 0);
+      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { opencodeCalibration: next } }); }, 0);
     }
   }
   const fit = learned.fit || window.quotaTokenEstimate.fitDeductionModel(learned.observations || calibration?.observations || []);
@@ -5335,12 +5337,9 @@ function quotaOpenCodeEstimateCard(entries) {
   const rawModel = window.quotaTokenEstimate.rawCapacityFromObservations(learned.observations || calibration?.observations || [], todayOpenCode, { weights: effectiveWeights });
   const rawCapacityValue = rawModel?.capacity || 0;
   const remainingPercent = value.officialRemainingPercent;
-  const reservePercent = Math.max(0, Math.min(100, Number(estimateConfig.reservePercent || 0)));
   const rawRemainingValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * remainingPercent / 100) : 0;
-  const rawConservativeValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * Math.max(0, remainingPercent - reservePercent) / 100) : 0;
   const rawCapacity = rawCapacityValue ? formatNumber(rawCapacityValue) : '学习中…';
   const rawRemaining = rawRemainingValue ? formatNumber(rawRemainingValue) : '学习中…';
-  const rawConservative = rawConservativeValue ? formatNumber(rawConservativeValue) : '学习中…';
   const cacheMix = rawModel?.cacheHitPercent === null || rawModel?.cacheHitPercent === undefined ? '采集中' : `${rawModel.cacheHitPercent}%`;
   const capacityNote = rawModel?.sourceKind === 'cumulative' ? '（累计口径）' : '';
   const cycles = window.quotaTokenEstimate.cycleSummaries(learned.observations || calibration?.observations || []);
@@ -5349,7 +5348,10 @@ function quotaOpenCodeEstimateCard(entries) {
     const status = cycle.current ? '当前周期' : cycle.partial ? '历史周期（部分）' : '历史周期';
     return `<div class="quota-cycle-row"><span>${date} · ${status}</span><b>${formatNumber(cycle.rawTokens)} Token</b><small>额度 ${cycle.startRemainingPercent}% → ${cycle.endRemainingPercent}% · 缓存 ${formatNumber(cycle.components.cacheRead)} · 未缓存 ${formatNumber(cycle.components.input)} · 输出 ${formatNumber(cycle.components.output)}</small></div>`;
   }).join('');
-  card.innerHTML = `<strong>OpenCode Go 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}${capacityNote}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>保守剩余 Token <b>${rawConservative}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>预计还能使用 <b>${hours}</b></span><span>多设备今日 OpenCode Token <b>${formatNumber(todayOpenCode.total)}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section>`;
+  // Functional parity does not mean field-for-field duplication. The Go card
+  // focuses on the subscription decisions the user can act on; model/tool totals
+  // remain available in their dedicated dashboard views.
+  card.innerHTML = `<strong>OpenCode Go 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}${capacityNote}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>预计还能使用 <b>${hours}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section>`;
   return card;
 }
 

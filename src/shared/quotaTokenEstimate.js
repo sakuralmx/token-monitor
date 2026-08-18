@@ -38,11 +38,11 @@
       cacheHitPercent: Number((Math.max(0, number(p.cacheRead)) / rawTotal * 100).toFixed(1))
     };
   }
-  function rawCapacityFromObservations(observations, currentComponents, _options = {}) {
+  function rawCapacityFromObservations(observations, currentComponents, options = {}) {
     const list = Array.isArray(observations) ? observations : [];
     const current = currentComponents && typeof currentComponents === 'object' ? currentComponents : {};
     const currentTotal = ['input', 'cacheRead', 'cacheWrite', 'output'].reduce((sum, key) => sum + Math.max(0, number(current[key])), 0);
-    const currentCacheRatio = currentTotal > 0 ? Math.max(0, number(current.cacheRead)) / currentTotal : null;
+    const weights = { ...DEFAULT_WEIGHTS, ...(options.weights || {}) };
 
     // A quota cycle is long (typically a month), so single-refresh percentage
     // movements are tiny and cache-noise-dominated. Differencing adjacent points
@@ -53,22 +53,31 @@
     // most reliable points) and is updated only on reset — long cycles make it
     // steadier, not noisier.
     const cycles = cycleSummaries(list);
+    const weightedTokens = (components) => Math.max(0, number(components?.input)) * number(weights.input, 1)
+      + Math.max(0, number(components?.cacheRead)) * number(weights.cacheRead, 0.1)
+      + Math.max(0, number(components?.cacheWrite)) * number(weights.cacheWrite, 1.25)
+      + Math.max(0, number(components?.output)) * number(weights.output, 6);
     const closedCapacities = [];
     for (const cycle of cycles) {
       if (cycle.current || cycle.partial) continue;
-      if (!(cycle.usedPercent > 0) || !(cycle.rawTokens > 0)) continue;
-      const mixAdjustment = 1; // closed cycles already wait for their own mix; no cross-mix squeeze
-      closedCapacities.push(cycle.rawTokens * 100 / cycle.usedPercent * mixAdjustment);
+      const consumed = Math.max(cycle.rawTokens, weightedTokens(cycle.components));
+      if (!(cycle.usedPercent > 0) || !(consumed > 0)) continue;
+      closedCapacities.push(consumed * 100 / cycle.usedPercent);
     }
 
-    // The active cycle contributes a cumulative ratio (total tokens consumed so
-    // far over the percentage burned so far). This is the only live signal while
-    // the first cycle is still open, and it adapts immediately to an official
-    // quota shrink/expand within the current cycle.
+    // The active cycle contributes a cumulative equivalent-token ratio. Cache
+    // hits, cache writes and output tokens are charged using the same effective
+    // weights as the rest of the estimate; otherwise an output-heavy cycle could
+    // report a capacity smaller than the quota consumption it already caused.
     const currentCycle = cycles.at(-1);
-    const currentCumulativeCapacity = currentCycle && currentCycle.usedPercent > 0 && currentCycle.rawTokens > 0
-      ? currentCycle.rawTokens * 100 / currentCycle.usedPercent
+    const currentConsumed = currentCycle ? Math.max(currentCycle.rawTokens, weightedTokens(currentCycle.components)) : 0;
+    const currentCumulativeCapacity = currentCycle && currentCycle.usedPercent > 0 && currentConsumed > 0
+      ? currentConsumed * 100 / currentCycle.usedPercent
       : 0;
+    const currentRawTokens = Math.max(0, number(currentCycle?.rawTokens));
+    const currentCacheRatio = currentRawTokens > 0
+      ? Math.max(0, number(currentCycle?.components?.cacheRead)) / currentRawTokens
+      : (currentTotal > 0 ? Math.max(0, number(current.cacheRead)) / currentTotal : null);
 
     // Hard floor invariant: capacity can never be less than what the current
     // cycle's observed consumption already implies — otherwise "remaining"
@@ -129,24 +138,31 @@
       totalSamples
     };
   }
+  function isCredibleQuotaRefill(previousRemaining, nextRemaining, previousResetsAt = null, observedAt = null) {
+    const before = number(previousRemaining, NaN);
+    const after = number(nextRemaining, NaN);
+    if (!Number.isFinite(before) || !Number.isFinite(after)) return false;
+    // Small low-water rebounds are routinely caused by delayed reconciliation or
+    // integer rounding (for example 1% → 5%). A material refill is a boundary even
+    // if the next observation arrives after part of the new allowance was already
+    // spent. When the previous server deadline has actually passed, any rebound
+    // is enough; a merely drifting future resetsAt is never used as a boundary.
+    const resetMs = Date.parse(previousResetsAt || '');
+    const observedMs = Date.parse(observedAt || '');
+    const crossedKnownBoundary = Number.isFinite(resetMs) && Number.isFinite(observedMs) && observedMs >= resetMs;
+    return after - before >= 20 || (after > before + 1 && crossedKnownBoundary);
+  }
   function cycleSummaries(observations) {
     const list = Array.isArray(observations) ? observations.filter((item) => item && typeof item === 'object') : [];
     const groups = [];
     let group = [];
     for (const item of list) {
       const previous = group[group.length - 1];
-      // A quota reset is signalled by the remaining percentage recovering (the
-      // server refills the window). `resetsAt` is deliberately NOT a boundary
-      // signal: several providers report a rolling/relative reset timestamp that
-      // advances on every refresh, so a strict `resetsAt !==` comparison would
-      // shard one continuous cycle into many fake groups (the 8/17 vs 8/14 split
-      // the user observed). A percentage rebound above the small-noise threshold
-      // is the only reliable reset marker; `resetsAt` stays on the summary purely
-      // for display. Known trade-off: a partial top-up (not a full reset) also
-      // reads as a boundary here — without a reliable server reset timestamp the
-      // two are indistinguishable, and a false boundary only re-anchors that one
-      // cycle's anchor rather than corrupting the whole history.
-      const boundary = previous && number(item.remainingPercent) > number(previous.remainingPercent) + 1;
+      // `resetsAt` is deliberately NOT a boundary signal: rolling/relative
+      // timestamps advance on every refresh. Percentage recovery is useful only
+      // when it is a credible refill; low-water corrections such as 1% → 5% are
+      // not a new subscription cycle.
+      const boundary = previous && isCredibleQuotaRefill(previous.remainingPercent, item.remainingPercent, previous.resetsAt, item.at);
       if (boundary) { groups.push(group); group = []; }
       group.push(item);
     }
@@ -157,8 +173,10 @@
       for (let itemIndex = 1; itemIndex < items.length; itemIndex += 1) {
         const before = items[itemIndex - 1]; const after = items[itemIndex];
         const interval = Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => [key, number(after.components?.[key]) - number(before.components?.[key])]));
-        if (Object.values(interval).some((value) => value < 0)) continue;
-        for (const key of ['input', 'cacheRead', 'cacheWrite', 'output']) delta[key] += interval[key];
+        // A collector correction can roll one component back while the others
+        // continue growing. Re-baseline only the negative component; discarding
+        // the whole interval would erase observable positive quota consumption.
+        for (const key of ['input', 'cacheRead', 'cacheWrite', 'output']) delta[key] += Math.max(0, interval[key]);
       }
       const rawTokens = delta.input + delta.cacheRead + delta.cacheWrite + delta.output;
       return {
@@ -238,9 +256,11 @@
   function selectSyncSnapshot(devices, provider) {
     const accountKey = String(provider?.accountKey || '').trim();
     const sourceDeviceId = String(provider?.sourceDeviceId || '').trim();
+    const providerId = String(provider?.provider || 'codex').trim().toLowerCase();
     const candidates = (Array.isArray(devices) ? devices : []).map((device) => ({
       deviceId: String(device?.deviceId || ''),
-      snapshot: normalizeSyncSnapshot(device?.quotaTokenEstimate)
+      snapshot: normalizeSyncSnapshot(device?.quotaTokenEstimates?.[providerId]
+        || (providerId === 'codex' ? device?.quotaTokenEstimate : null))
     })).filter((item) => item.snapshot && (
       (sourceDeviceId && item.deviceId === sourceDeviceId)
       || (accountKey && item.snapshot.accountKey === accountKey)
@@ -273,12 +293,10 @@
     const components = Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => [key, Math.max(0, number(rawComponents[key]))]));
     const current = { remainingPercent: pct, localEquivalent: local, components, at, resetsAt };
     const last = state.last;
-    // A reset is signalled by a percentage rebound (server refill) or a local
-    // counter rollback (data archive rebuild). `resetsAt` is not a reset marker:
-    // rolling/relative reset timestamps advance on every refresh and would split
-    // one continuous cycle into many fake ones. See cycleSummaries for the longer
-    // rationale.
-    const reset = last && (pct > number(last.remainingPercent) + 1 || local < number(last.localEquivalent));
+    // Only a credible provider refill closes the quota cycle. A local cumulative
+    // counter rollback is a collector re-baseline, not evidence that the remote
+    // subscription reset; cycleSummaries already skips negative component deltas.
+    const reset = last && isCredibleQuotaRefill(last.remainingPercent, pct, last.resetsAt, at);
     if (!last) return { version: 3, last: current, first: current, samples: state.samples, observations: [...state.observations, current], changed: true, capacity: inferredCapacity(state.samples), hoursLeft: null, fit: null };
     if (reset) {
       const observations = [...state.observations, current];
@@ -310,10 +328,9 @@
     let remoteOnly = 0;
     for (let i = 1; i < observations.length; i += 1) {
       const before = observations[i - 1]; const after = observations[i];
-      // Same rationale as cycleSummaries: a percentage rebound, not a resetsAt
-      // string comparison, marks a reset boundary across which intervals must
-      // not be differenced.
-      if (number(after.remainingPercent) > number(before.remainingPercent)) continue;
+      // Do not regress across a credible refill. Small upward reconciliations are
+      // not quota use either, so they naturally fall out at the used > 0 check.
+      if (isCredibleQuotaRefill(before.remainingPercent, after.remainingPercent, before.resetsAt, after.at)) continue;
       const used = (number(before.remainingPercent) - number(after.remainingPercent)) / 100;
       if (!(used > 0)) continue;
       const x = ['input', 'cacheRead', 'cacheWrite', 'output'].map((key) => Math.max(0, number(after.components?.[key]) - number(before.components?.[key])));
@@ -360,5 +377,5 @@
     return { capacity: Math.round(capacity), weights, intervals: rows.length, retainedIntervals: kept.length, remoteOrOutlierIntervals: remoteOnly + rows.length - kept.length, meanErrorPercent, confidence: rows.length >= 25 && meanErrorPercent < 15 ? 'high' : rows.length >= 12 && meanErrorPercent < 25 ? 'medium' : 'low' };
   }
 
-  return { DEFAULT_CLIENT_ID, DEFAULT_WEIGHTS, clientComponents, equivalentTokens, rawTokenProjection, rawCapacityFromObservations, cycleSummaries, estimate, normalizeCalibration, normalizeSyncSnapshot, selectSyncSnapshot, inferredCapacity, advanceCalibration, projectedHoursLeft, intervalRows, fitDeductionModel };
+  return { DEFAULT_CLIENT_ID, DEFAULT_WEIGHTS, clientComponents, equivalentTokens, rawTokenProjection, rawCapacityFromObservations, isCredibleQuotaRefill, cycleSummaries, estimate, normalizeCalibration, normalizeSyncSnapshot, selectSyncSnapshot, inferredCapacity, advanceCalibration, projectedHoursLeft, intervalRows, fitDeductionModel };
 });
