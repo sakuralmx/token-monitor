@@ -572,7 +572,8 @@ function normalizeQuotaTokenEstimate(value) {
   const weights = source.weights && typeof source.weights === 'object' ? source.weights : {};
   const bounded = (input, fallback, max = Number.MAX_SAFE_INTEGER) => Number.isFinite(Number(input)) ? Math.max(0, Math.min(max, Number(input))) : fallback;
   const calibration = source.calibration && typeof source.calibration === 'object' ? source.calibration : null;
-  return { enabled: source.enabled !== false, capacity: bounded(source.capacity, 0), reservePercent: bounded(source.reservePercent, 0, 100), calibration, weights: { input: bounded(weights.input, 1), cacheRead: bounded(weights.cacheRead, 0.1), cacheWrite: bounded(weights.cacheWrite, 1.25), output: bounded(weights.output, 6) } };
+  const opencodeCalibration = source.opencodeCalibration && typeof source.opencodeCalibration === 'object' ? source.opencodeCalibration : null;
+  return { enabled: source.enabled !== false, capacity: bounded(source.capacity, 0), reservePercent: bounded(source.reservePercent, 0, 100), calibration, opencodeCalibration, weights: { input: bounded(weights.input, 1), cacheRead: bounded(weights.cacheRead, 0.1), cacheWrite: bounded(weights.cacheWrite, 1.25), output: bounded(weights.output, 6) } };
 }
 
 function normalizeHeatmapMetric(value, fallback = 'cost') {

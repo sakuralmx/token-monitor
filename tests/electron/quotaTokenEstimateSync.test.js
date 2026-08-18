@@ -33,12 +33,16 @@ test('quota card drops the redundant all-tools token, confidence, and filler cop
   assert.doesNotMatch(app, /估算使用所有已保存的历史区间/);
 });
 
-test('OpenCode Go renders a sibling quota card with cycle counts and CNY amounts', () => {
-  // G3: an OpenCode Go card sits beside the GPT card; G4/C1: amounts are CNY.
+test('OpenCode Go renders a sibling quota card mirroring the GPT token capacity', () => {
+  // The OpenCode Go card reuses the exact same token-capacity estimation as the
+  // GPT card —预估总容量 / 预估剩余 Token / cycle history — rather than a
+  // dollar/request figure, and keeps its calibration in a separate field so the
+  // two providers never cross-pollinate observations.
   assert.match(app, /function quotaOpenCodeEstimateCard/);
-  assert.match(app, /OpenCode Go 统计/);
-  assert.match(app, /周期数/);
-  assert.match(app, /estimateGoWindows/);
-  assert.match(app, /formatQuotaCny/);
-  assert.match(app, /单位：人民币/);
+  assert.match(app, /OpenCode Go 额度趋势/);
+  assert.match(app, /预估总容量/);
+  assert.match(app, /预估剩余 Token/);
+  assert.match(app, /多设备今日 OpenCode Token/);
+  assert.match(app, /opencodeCalibration/);
+  assert.match(app, /clientComponents\(state\.stats\?\.periods\?\.allTime, 'opencode'\)/);
 });

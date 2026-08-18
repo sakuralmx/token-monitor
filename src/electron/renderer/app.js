@@ -905,9 +905,6 @@ function compactMonthLabel(label) {
 }
 function currentCurrency() { return currencyApi.normalizeCurrency(state.settings?.currency); }
 function formatCost(value) { return currencyApi.formatCurrencyFromUsd(value, currentCurrency()); }
-// The quota cards present their dollar figures in CNY regardless of the global
-// currency setting (the user's stated preference), reusing the same rate chain.
-function formatQuotaCny(value) { return currencyApi.formatCurrencyFromUsd(value, 'CNY'); }
 function applyEffectiveCurrencyRates() {
   if (state.settings?.currencyRatesEffective) currencyApi.configureRates(state.settings.currencyRatesEffective);
 }
@@ -5231,6 +5228,7 @@ function renderThirdPartyAccountGroup(label, providers, color) {
 }
 
 let quotaCalibrationSaveKey = '';
+let quotaOpenCodeCalibrationSaveKey = '';
 function quotaCodexEstimateCard(entries) {
   const config = state.settings?.quotaTokenEstimate || {};
   const provider = (entries.get('codex') || []).find((item) => item?.status === 'ok');
@@ -5294,31 +5292,64 @@ function quotaCodexEstimateCard(entries) {
 
 function quotaOpenCodeEstimateCard(entries) {
   const config = state.settings?.quotaTokenEstimate || {};
-  if (!config.enabled || !window.opencodeGoQuota) return null;
-  // Only a Go subscription (dollar-metered, $12/$30/$60) gets this card; a
-  // Zen-only account has no Go windows and is left to the provider rows above.
+  // OpenCode Go is the quota-metered subscription (session/weekly/monthly
+  // percentage windows). Only that account yields a percentage the estimator can
+  // anchor on; a Zen-only account has a balance but no quota windows.
   const provider = (entries.get('opencode') || []).find((item) => item?.status === 'ok' && item?.accountLabel === 'Go');
-  if (!provider) return null;
-  const windows = Array.isArray(provider.windows) ? provider.windows : [];
-  // Pick the day's dominant model as the request-count reference. Go usage is
-  // metered per model; without a model we still show dollars but not requests.
-  const clientModels = state.stats?.periods?.today?.clientModels?.opencode || {};
-  const dominantModel = Object.entries(clientModels).sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))[0]?.[0] || '';
-  const goWindows = window.opencodeGoQuota.estimateGoWindows({ windows, modelId: dominantModel });
-  const todayOpenCode = Number(state.stats?.periods?.today?.clients?.opencode || 0);
-
-  const kindLabel = { session: '5 小时', weekly: '每周', monthly: '每月' };
-  const windowRows = goWindows.map((row) => {
-    const remainPct = row.usedPercent === null ? '—' : `${Math.max(0, 100 - row.usedPercent)}%`;
-    const money = row.remainingUsd === null ? '—' : formatQuotaCny(row.remainingUsd);
-    const requests = row.remainingRequests === null ? '' : ` · 约 ${formatNumber(row.remainingRequests)} 次`;
-    const label = kindLabel[row.kind] || row.kind || '—';
-    return `<div class="quota-cycle-row"><span>${label}</span><b>${money}${requests}</b><small>剩余额度 ${remainPct}</small></div>`;
-  }).join('');
-
+  if (!config.enabled || !provider || !window.quotaTokenEstimate) return null;
+  const synced = window.quotaTokenEstimate.selectSyncSnapshot(state.stats?.devices, provider);
+  const estimateConfig = synced ? {
+    ...config,
+    capacity: synced.capacity || config.capacity,
+    reservePercent: synced.reservePercent,
+    weights: synced.weights,
+    opencodeCalibration: synced.calibration
+  } : config;
+  const calibration = estimateConfig.opencodeCalibration || estimateConfig.calibration;
+  const official = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.allTime, capacity: 0, weights: estimateConfig.weights });
+  const cumulativeComponents = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.allTime, 'opencode');
+  const learned = window.quotaTokenEstimate.advanceCalibration(calibration, {
+    remainingPercent: official.officialRemainingPercent,
+    localEquivalent: official.localEquivalentUsed,
+    components: cumulativeComponents,
+    resetsAt: official.resetsAt,
+    at: state.stats?.limits?.updatedAt || new Date().toISOString()
+  });
+  if (learned.changed) {
+    const next = { version: 3, last: learned.last, first: learned.first, samples: learned.samples, observations: learned.observations };
+    const key = JSON.stringify(next);
+    if (key !== quotaOpenCodeCalibrationSaveKey) {
+      quotaOpenCodeCalibrationSaveKey = key;
+      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { ...config, capacity: estimateConfig.capacity, weights: estimateConfig.weights, opencodeCalibration: next } }); }, 0);
+    }
+  }
+  const fit = learned.fit || window.quotaTokenEstimate.fitDeductionModel(learned.observations || calibration?.observations || []);
+  const capacity = fit?.capacity || learned.capacity || Number(estimateConfig.capacity || 0);
+  const effectiveWeights = fit && fit.confidence !== 'low' ? fit.weights : estimateConfig.weights;
+  const value = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.today, capacity, reservePercent: estimateConfig.reservePercent, weights: effectiveWeights });
   const card = document.createElement('div');
   card.className = 'quota-token-card';
-  card.innerHTML = `<strong>OpenCode Go 统计</strong><div><span>计费周期 <b>5 小时 / 每周 / 每月</b></span><span>周期数 <b>${goWindows.length}</b></span><span>多设备今日 OpenCode Token <b>${formatNumber(todayOpenCode)}</b></span></div><section class="quota-cycle-history"><strong>额度周期记录（单位：人民币）</strong>${windowRows || '<small>暂无额度数据</small>'}</section>`;
+  const officialLabel = value.officialRemainingPercent === null ? '暂不可用' : `${value.officialRemainingPercent}%`;
+  const hours = learned.hoursLeft === null || learned.hoursLeft === undefined ? '正在采集' : `${learned.hoursLeft} 小时`;
+  const todayOpenCode = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.today, 'opencode');
+  const rawModel = window.quotaTokenEstimate.rawCapacityFromObservations(learned.observations || calibration?.observations || [], todayOpenCode, { weights: effectiveWeights });
+  const rawCapacityValue = rawModel?.capacity || 0;
+  const remainingPercent = value.officialRemainingPercent;
+  const reservePercent = Math.max(0, Math.min(100, Number(estimateConfig.reservePercent || 0)));
+  const rawRemainingValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * remainingPercent / 100) : 0;
+  const rawConservativeValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * Math.max(0, remainingPercent - reservePercent) / 100) : 0;
+  const rawCapacity = rawCapacityValue ? formatNumber(rawCapacityValue) : '学习中…';
+  const rawRemaining = rawRemainingValue ? formatNumber(rawRemainingValue) : '学习中…';
+  const rawConservative = rawConservativeValue ? formatNumber(rawConservativeValue) : '学习中…';
+  const cacheMix = rawModel?.cacheHitPercent === null || rawModel?.cacheHitPercent === undefined ? '采集中' : `${rawModel.cacheHitPercent}%`;
+  const capacityNote = rawModel?.sourceKind === 'cumulative' ? '（累计口径）' : '';
+  const cycles = window.quotaTokenEstimate.cycleSummaries(learned.observations || calibration?.observations || []);
+  const cycleRows = cycles.slice(-6).reverse().map((cycle) => {
+    const date = cycle.startedAt ? new Date(cycle.startedAt).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
+    const status = cycle.current ? '当前周期' : cycle.partial ? '历史周期（部分）' : '历史周期';
+    return `<div class="quota-cycle-row"><span>${date} · ${status}</span><b>${formatNumber(cycle.rawTokens)} Token</b><small>额度 ${cycle.startRemainingPercent}% → ${cycle.endRemainingPercent}% · 缓存 ${formatNumber(cycle.components.cacheRead)} · 未缓存 ${formatNumber(cycle.components.input)} · 输出 ${formatNumber(cycle.components.output)}</small></div>`;
+  }).join('');
+  card.innerHTML = `<strong>OpenCode Go 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}${capacityNote}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>保守剩余 Token <b>${rawConservative}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>预计还能使用 <b>${hours}</b></span><span>多设备今日 OpenCode Token <b>${formatNumber(todayOpenCode.total)}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section>`;
   return card;
 }
 
