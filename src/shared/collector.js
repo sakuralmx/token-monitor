@@ -34,6 +34,7 @@ const { retainDailyHistory, retainLiveDailyHistory } = require('./dailyHistoryAr
 const cursorAuth = require('./cursorAuth');
 const { findSessionFiles, codexSessionFile } = require('./sessionFiles');
 const opencodeSession = require('./opencodeSession');
+const { decompressZstd: decompressDshZstd, providerByModelOf } = require('./dshSessions');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./promaUsage');
 const {
   buildQoderCnHistoryGraph,
@@ -202,6 +203,10 @@ function tokscaleClientFilter(clients) {
 function runTokscale({ clients, flags, commandTimeoutMs }) {
   const clientFilter = tokscaleClientFilter(clients);
   if (!clientFilter) return Promise.resolve({ entries: [] });
+  // Tokscale's session grouping retains a provider field on every row even
+  // though provider is not a legal grouping component alongside session. Keep
+  // the supported grouping so session detail and provider attribution both
+  // survive; requesting client,session,provider,model makes the whole scan fail.
   return spawnTokscaleJson(['--json', '--client', clientFilter, '--group-by', 'client,session,model', ...flags], commandTimeoutMs);
 }
 
@@ -660,6 +665,44 @@ function lastJsonlTimestamp(filePath) {
   return value;
 }
 
+const dshProviderCache = new Map();
+
+function dshSessionProviderMap(filePath) {
+  let stat;
+  try { stat = fs.statSync(filePath); } catch (_) { return new Map(); }
+  const cacheKey = `${stat.size}:${stat.mtimeMs}`;
+  const cached = dshProviderCache.get(filePath);
+  if (cached?.key === cacheKey) return cached.value;
+  let value = new Map();
+  try {
+    const decoded = decompressDshZstd(fs.readFileSync(filePath));
+    if (decoded) value = providerByModelOf(decoded.toString('utf8').split(/\r?\n/));
+  } catch (_) { /* unreadable/torn logs retain tokscale's provider */ }
+  dshProviderCache.set(filePath, { key: cacheKey, value });
+  return value;
+}
+
+function dshFileFromSessionId(sessionId) {
+  const raw = String(sessionId || '');
+  const file = raw.startsWith('dsh:') ? raw.slice(4) : raw;
+  return /session\.jsonl(?:\.zstd)?$/i.test(file) ? file : '';
+}
+
+function restoreDshRouteProviders(json, resolveProviderMap = dshSessionProviderMap) {
+  if (!json || typeof json !== 'object') return json;
+  const entries = Array.isArray(json) ? json : Array.isArray(json.entries) ? json.entries : null;
+  if (!entries) return json;
+  for (const row of entries) {
+    if (normalizeClientName(row?.client) !== 'dsh') continue;
+    const filePath = dshFileFromSessionId(row.sessionId || row.session_id || row.session);
+    const model = String(row.model || row.modelName || row.model_name || '').trim().toLowerCase();
+    if (!filePath || !model) continue;
+    const route = resolveProviderMap(filePath).get(model);
+    if (route) row.provider = route;
+  }
+  return json;
+}
+
 function sessionRefsForPeriods(periods) {
   const refs = new Map();
   for (const period of Object.values(periods || {})) {
@@ -989,7 +1032,8 @@ async function collectUsageOnce(options) {
   // straddles local midnight cannot pair a day-N today scan with a day-N+1
   // window (issue #37 follow-up). Injectable for tests.
   const collectedAt = collectionDate(options.now);
-  const runTokscaleFn = options.runTokscale || runTokscale;
+  const runTokscaleRaw = options.runTokscale || runTokscale;
+  const runTokscaleFn = async (request) => restoreDshRouteProviders(await runTokscaleRaw(request));
   const collectWsl = options.collectWslUsage || collectWslUsageImpl;
   const probeWslStateFn = options.probeWslState || probeWslStateImpl;
   // Injectable only for the WSL-status gate, so tests can exercise the win32
@@ -3493,6 +3537,7 @@ module.exports = {
   resetPromaPricingCache,
   readTokscalePricingCatalog,
   resetTokscaleCatalogCache,
+  restoreDshRouteProviders,
   tokscalePricingCatalog,
   resolveWatchUsePolling,
   selfSyncSourceRootsForClients,

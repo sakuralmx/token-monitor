@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { extractUsageFromTokscale, mergePeriods } = require('../../src/shared/usage');
+const { restoreDshRouteProviders } = require('../../src/shared/collector');
 
 // Isolate the shared data dir so startCollector's persisted collector-anchor.json
 // does not write the real user data dir during the suite.
@@ -281,6 +282,18 @@ test('collectUsageOnce includes the normalized tracked client list in summaries'
     childProcess.spawn = originalSpawn;
     delete require.cache[collectorPath];
   }
+});
+
+test('restoreDshRouteProviders replaces protocol inference with the DSH route id', () => {
+  const json = {
+    entries: [
+      { client: 'dsh', sessionId: 'dsh:C:\\logs\\session.jsonl.zstd', model: 'deepseek-v4-pro', provider: 'openai' },
+      { client: 'opencode', sessionId: 'other', model: 'deepseek-v4-pro', provider: 'openai' }
+    ]
+  };
+  restoreDshRouteProviders(json, () => new Map([['deepseek-v4-pro', 'yx']]));
+  assert.equal(json.entries[0].provider, 'yx');
+  assert.equal(json.entries[1].provider, 'openai');
 });
 
 test('collectUsageOnce requests session-level tokscale grouping', async () => {

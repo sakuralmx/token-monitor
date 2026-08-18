@@ -108,56 +108,29 @@ test('device records carry, expose, and preserve friendly OS metadata', () => {
   assert.equal(limitsOnly.osVersion, '26.0');
 });
 
-test('device records synchronize bounded Codex quota calibration and preserve it on limits-only updates', () => {
+test('legacy quota estimate payloads are dropped from normalized and merged device records', () => {
   const observation = { remainingPercent: 75, localEquivalent: 1000, components: { input: 1000 }, at: '2026-05-27T00:00:00.000Z' };
-  const existing = recordWithLimits({ quotaTokenEstimate: {
+  const legacy = {
     accountKey: 'sha256:codex',
     updatedAt: observation.at,
     capacity: 1_000_000,
     calibration: { first: observation, last: observation, observations: [observation], samples: [1_000_000] }
-  } });
+  };
+  const existing = recordWithLimits({
+    quotaTokenEstimate: legacy,
+    quotaTokenEstimates: { codex: legacy, opencode: { ...legacy, accountKey: 'sha256:go' } }
+  });
   const aggregate = aggregateDevices([existing], 0);
-  assert.equal(aggregate.devices[0].quotaTokenEstimate.accountKey, 'sha256:codex');
-  assert.equal(aggregate.devices[0].quotaTokenEstimate.capacity, 1_000_000);
+  assert.equal(Object.hasOwn(aggregate.devices[0], 'quotaTokenEstimate'), false);
+  assert.equal(Object.hasOwn(aggregate.devices[0], 'quotaTokenEstimates'), false);
 
   const updated = mergeDeviceRecord(existing, {
-    deviceId: 'macbook', limitsOnly: true, updatedAt: '2026-05-27T00:01:00.000Z', limits: { providers: [] }
-  });
-  assert.equal(updated.quotaTokenEstimate.accountKey, 'sha256:codex');
-  assert.equal(updated.quotaTokenEstimate.calibration.observations.length, 1);
-});
-
-test('provider-keyed quota snapshots merge per provider and survive limits-only omission', () => {
-  const observation = (at) => ({ remainingPercent: 50, localEquivalent: 100, components: {}, at });
-  const snapshot = (accountKey, at) => ({
-    accountKey, updatedAt: at,
-    calibration: { first: observation(at), last: observation(at), observations: [observation(at)] }
-  });
-  const existing = recordWithLimits({
-    quotaTokenEstimates: {
-      codex: snapshot('codex-old', '2026-05-27T00:00:00.000Z'),
-      opencode: snapshot('go-old', '2026-05-27T00:00:00.000Z')
-    }
-  });
-  const partial = mergeDeviceRecord(existing, {
     deviceId: 'macbook', limitsOnly: true, updatedAt: '2026-05-27T00:01:00.000Z', limits: { providers: [] },
-    quotaTokenEstimates: { codex: snapshot('codex-new', '2026-05-27T00:01:00.000Z') }
+    quotaTokenEstimate: legacy,
+    quotaTokenEstimates: { codex: legacy }
   });
-  assert.equal(partial.quotaTokenEstimates.codex.accountKey, 'codex-new');
-  assert.equal(partial.quotaTokenEstimates.opencode.accountKey, 'go-old');
-  const normalPartial = mergeDeviceRecord(existing, {
-    deviceId: 'macbook', updatedAt: '2026-05-27T00:01:00.000Z',
-    quotaTokenEstimates: { codex: snapshot('codex-normal', '2026-05-27T00:01:00.000Z') }
-  });
-  assert.equal(normalPartial.quotaTokenEstimates.codex.accountKey, 'codex-normal');
-  assert.equal(normalPartial.quotaTokenEstimates.opencode.accountKey, 'go-old');
-  const omitted = mergeDeviceRecord(partial, {
-    deviceId: 'macbook', limitsOnly: true, updatedAt: '2026-05-27T00:02:00.000Z', limits: { providers: [] }
-  });
-  assert.equal(omitted.quotaTokenEstimates.codex.accountKey, 'codex-new');
-  assert.equal(omitted.quotaTokenEstimates.opencode.accountKey, 'go-old');
-  const aggregate = aggregateDevices([omitted], 0);
-  assert.equal(aggregate.devices[0].quotaTokenEstimates.opencode.accountKey, 'go-old');
+  assert.equal(Object.hasOwn(updated, 'quotaTokenEstimate'), false);
+  assert.equal(Object.hasOwn(updated, 'quotaTokenEstimates'), false);
 });
 
 test('aggregateDevices does not let an orphaned stale device id override the current limits state', () => {
@@ -857,6 +830,26 @@ test('extractUsageFromTokscale passes zcode input straight through (tokscale nor
   assert.equal(session.outputTokens, 50);
   assert.equal(session.reasoningTokens, 10);
   assert.equal(session.models['glm-5.2'], 1050);
+});
+
+test('extractUsageFromTokscale aggregates API provider independently from client', () => {
+  const period = extractUsageFromTokscale({
+    groupBy: 'client,session,provider,model',
+    entries: [
+      { client: 'opencode', provider: 'opencode-go', model: 'deepseek-v4-pro', input: 100, cacheRead: 900, output: 20, cost: 0.1 },
+      { client: 'opencode', provider: 'deepseek', model: 'deepseek-v4-pro', input: 200, cacheRead: 300, output: 30, cost: 0.2 },
+      { client: 'dsh', provider: 'deepseek', model: 'deepseek-v4-pro', input: 400, cacheRead: 500, output: 40, cost: 0.3 }
+    ]
+  });
+  assert.equal(period.providerTokens['opencode-go'], 1020);
+  assert.equal(period.providerCacheReads['opencode-go'], 900);
+  assert.equal(period.providerOutputs['opencode-go'], 20);
+  assert.equal(period.providerTokens.deepseek, 1470);
+  assert.equal(period.clientProviders.opencode['opencode-go'], 1020);
+  assert.equal(period.clientProviders.opencode.deepseek, 530);
+  assert.equal(period.clientProviders.dsh.deepseek, 940);
+  assert.equal(period.providerCosts['opencode-go'], 0.1);
+  assert.equal(period.providerCosts.deepseek, 0.5);
 });
 
 test('extractUsageFromTokscale normalizes Kiro client ids', () => {

@@ -325,6 +325,45 @@ function tokenStatsOf(lines) {
   return { totalTokens, costUsd: 0 };
 }
 
+// Read provider identity from the fully reconstructed event stream. DSH stores
+// it below assistant/message.data.message.source (and older/newer adapters may
+// repeat it in replayState), never as a top-level JSONL field. Keep this helper
+// adapter-scoped: the public catalog remains provider-agnostic, while local
+// diagnostics can verify that multi-frame logs were actually read.
+function providerNamesOf(lines) {
+  const providers = new Set();
+  for (const line of lines) {
+    const obj = parseEventLine(line);
+    if (!obj || obj.type !== 'assistant/message') continue;
+    const message = obj.data?.message;
+    const source = message?.source;
+    for (const value of [source?.provider, source?.replayState?.provider]) {
+      const provider = String(value || '').trim();
+      if (provider) providers.add(provider);
+    }
+  }
+  return [...providers];
+}
+
+// Session-level provider lookup used to restore DSH's configured route id after
+// tokscale normalizes an OpenAI-compatible endpoint to its protocol family
+// (`openai`). A session may switch models/providers, so key by model and return a
+// value only when that model has one unambiguous route in the session.
+function providerByModelOf(lines) {
+  const routes = new Map();
+  for (const line of lines) {
+    const obj = parseEventLine(line);
+    if (!obj || obj.type !== 'assistant/message') continue;
+    const source = obj.data?.message?.source;
+    const model = String(source?.model || source?.replayState?.model || '').trim().toLowerCase();
+    const provider = String(source?.provider || source?.replayState?.provider || '').trim().toLowerCase();
+    if (!model || !provider) continue;
+    if (!routes.has(model)) routes.set(model, new Set());
+    routes.get(model).add(provider);
+  }
+  return new Map([...routes].flatMap(([model, providers]) => providers.size === 1 ? [[model, [...providers][0]]] : []));
+}
+
 function readSessionBytes(deps, filePath) {
   const fsModule = deps.fsModule || require('node:fs');
   let stat;
@@ -430,6 +469,8 @@ function scanDshSessions(deps = {}) {
 module.exports = {
   MAX_SESSION_BYTES,
   decompressZstd,
+  providerByModelOf,
+  providerNamesOf,
   detectBackend,
   dshEntryFromDir,
   hasZstdMagic,

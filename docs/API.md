@@ -118,6 +118,26 @@ Example payload:
         "gpt-5": 0.01
       }
     },
+    "providerTokens": {
+      "openai": 1234
+    },
+    "providerCosts": {
+      "openai": 0.01
+    },
+    "providerCacheReads": {
+      "openai": 1100
+    },
+    "providerCacheWrites": {
+      "openai": 0
+    },
+    "providerOutputs": {
+      "openai": 34
+    },
+    "clientProviders": {
+      "codex": {
+        "openai": 1234
+      }
+    },
     "sessions": {
       "codex:rollout-2026-05-30T11-44-50-abc": {
         "client": "codex",
@@ -232,7 +252,7 @@ Current agents and widgets include `osName` and, when known, `osVersion` so devi
 
 `syncUploadIntervalMs` is optional. A remote-hub widget includes `0` for live uploads or the selected fixed interval in milliseconds (`600000`, `1200000`, or `1800000`). The hub uses a positive interval to keep the device and its limits fresh for at least twice the upload interval; omitted or `0` values retain the configured `staleAfterMs` behavior. Local collection and embedded-host ingest remain live.
 
-`quotaTokenEstimate` is the optional authenticated device-only legacy Codex estimate snapshot. New producers also send `quotaTokenEstimates`, keyed by `codex` and/or `opencode`, so OpenCode Go and Codex calibration stay isolated while old hubs and clients can keep using the singular Codex field. Each snapshot carries `version`, the existing hashed `accountKey`, `updatedAt`, bounded numeric `capacity` / `reservePercent` / component `weights`, and a bounded calibration document (`first`, `last`, up to 256 capacity `samples`, and up to 512 sanitized `observations`). Each observation contains only the official remaining percentage, aggregate equivalent-token count, four aggregate token components, observation time, and optional reset time. Credentials, email addresses, response bodies, session content, and local paths are neither accepted nor retained. Limits-only updates preserve the last snapshots. Authenticated stats return them only inside `devices[]`; public stats drop `devices` and therefore never expose calibration data. Clients select the provider-specific snapshot belonging to the device that supplied the visible limit, falling back to an exact hashed account-key match, so platform-specific hashes do not mix unrelated accounts.
+`providerTokens`, `providerCosts`, `providerCacheReads`, `providerCacheWrites`, and `providerOutputs` are optional API-channel rollups. `clientProviders` is the corresponding client → provider token matrix. Provider ids come from Tokscale's row-level `provider` value; for DSH rows the collector restores the configured route id from the local session log when Tokscale has inferred only the transport protocol. These fields answer which API route was billed independently of which client launched it: for example, DeepSeek used through OpenCode remains `provider=deepseek`, while OpenCode Go traffic remains `provider=opencode-go`. Older producers and older retained records omit these maps; normalization accepts that shape and supplies empty maps, so consumers must treat a missing provider rollup as **unobserved attribution**, not as proof of zero provider usage. Client/model totals remain the compatibility source for consumers that do not understand provider attribution.
 
 `periodWindows` is optional. Agents and widgets stamp each snapshot with the UTC instant its `today`/`month` windows end, computed in the device's own local time (`endsAt` = next local midnight / next local month start; `key` is the device-local day/month for reference). New producers also include their IANA `timeZone`, which lets retained daily History keep using that device's calendar after it goes offline. The hub uses `endsAt` to expire a device's `today`/`month` from the native aggregate once `now >= endsAt`, so an offline device does not keep contributing a stale day/month snapshot (`allTime` never expires). Payloads without `periodWindows` fall back to a UTC day/month comparison against `updatedAt`; fixed History ranges fail closed after an unzoned producer window expires.
 
@@ -338,7 +358,7 @@ Response includes:
 - `historyRevision`, a compact invalidation hash for the aggregate History preview, and `deviceHistoryRevision`, a device-identity-aware hash used to invalidate per-device fixed-range caches when History ownership or availability changes
 - `limits.providers` aggregated by provider account
 - `subscriptionsUpdatedAt`, the `updatedAt` of the hub's shared subscription list, or `""` if nothing has been written to it. The version only, never the records: a device compares it against the copy it holds and re-reads `/api/subscriptions` only when it has been overtaken. This is how an edit made on one device reaches the others, so a client that does not consult it will only see the shared list as it stood when it connected. Omitted from public Worker stats. An absent field means "no news" rather than an empty list.
-- `devices`, including each device's normalized `periods`, `limits`, `receivedAt`, `osName` / `osVersion` when reported, optional `syncUploadIntervalMs`, optional legacy `quotaTokenEstimate`, optional provider-keyed `quotaTokenEstimates`, and optional `periodWindows`
+- `devices`, including each device's normalized `periods`, `limits`, `receivedAt`, `osName` / `osVersion` when reported, optional `syncUploadIntervalMs`, and optional `periodWindows`
 - stale status for devices that have not reported recently
 
 If multiple devices report the same provider account, the hub keeps the freshest valid limits status for that account. Public Worker stats omit account identifiers.

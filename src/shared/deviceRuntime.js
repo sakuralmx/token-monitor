@@ -35,8 +35,11 @@ function createDeviceRuntime(options = {}, deps = {}) {
       : {}),
     onRecord(record, meta) {
       if (!active) return;
+      const transformedRecord = options.transformRecord
+        ? options.transformRecord(record, meta)
+        : record;
       try {
-        options.onRecord?.(record, meta);
+        options.onRecord?.(transformedRecord, meta);
       } catch (error) {
         try {
           options.onError?.(error, 'record');
@@ -45,7 +48,7 @@ function createDeviceRuntime(options = {}, deps = {}) {
         }
       }
       if (sink?.enqueue) {
-        Promise.resolve(sink.enqueue(record, meta.revision)).catch((error) => {
+        Promise.resolve(sink.enqueue(transformedRecord, meta.revision)).catch((error) => {
           options.onError?.(error, 'sink');
         });
       }

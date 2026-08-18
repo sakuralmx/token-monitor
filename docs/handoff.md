@@ -4,13 +4,11 @@
 
 ## 最近一轮
 
-- 时间：2026-08-18（订阅 Token 统计修正）
-- OpenCode 归属核查：本机直接运行 tokscale 4.13.0 的 `--client opencode --group-by client,session,model`，从 2026-08-01 起返回 0 条；同次 `opencode,dsh` 扫描中的 DeepSeek V4 Pro 均带 `client: dsh`、`provider: deepseek`。数据协议本身可按 client 区分 OpenCode API 调用与 DSH 调用，但本机当前 OpenCode 数据源没有可归属记录，不能把 DSH 的 DeepSeek 用量猜测性搬到 OpenCode。模型目录的全局 model 聚合会按模型合并来源；精确归属应查看 Tool/会话或 `clientModels.opencode`。
-- 容量预估：当前周期的 input/cacheRead/cacheWrite/output 先按有效权重折算，同时以原始 token 总数兜底，最终容量硬下限为 `max(原始消耗, 加权消耗) / 已消耗百分比 × 100`；缓存命中比例改用同一个额度周期的组件，而不是混用“今日”口径。
-- 周期统计：`resetsAt` 漂移仍不会切周期；1%→5% 这类低水位回补不再误切，所以 8/14 的 75%→1% 与 8/17 的 5%→1% 保持同一周期。真实重置通过大幅回补，或跨过已知服务端 reset deadline 后的小幅回补识别。
-- OpenCode 功能一致性：卡片不再逐字段复制 GPT；保留订阅决策所需的官方剩余、容量/剩余、周期缓存比例、预计可用时间和周期历史，移除重复的“保守剩余”和“今日 OpenCode”卡内字段（这些总量在专门视图查看）。设置标题同步改为“订阅 Token 额度估算”。
-- 多设备同步：新增向后兼容的 provider-keyed `quotaTokenEstimates.codex/opencode`，保留旧 `quotaTokenEstimate` Codex 字段；两种校准独立保存、逐 provider 合并，普通更新与 limits-only 更新都不会互相覆盖。
-- 验证：聚焦回归 100/100 通过；Hub build registry 已更新；完整 `npm run verify` 除既有 Windows 无权创建 macOS symlink 夹具的 `EPERM` 外通过（最终完整复跑见本轮交付记录）。
+- 时间：2026-08-18（删除容量预估）
+- 已删除面向用户的 GPT/Codex 与 OpenCode Go 两张额度趋势卡，以及启用、备用容量、安全预留三项设置和对应 CSS/脚本入口。
+- 已删除 `src/shared/quotaTokenEstimate.js`、Worker 生成副本及专用测试；主进程不再归一化设置、采集校准、生成 `quotaTokenEstimate(s)` 快照，Hub/Worker 归一化也会丢弃旧设备发来的历史字段。
+- 保留独立有用的 provider 归属统计（`providerTokens/providerCosts/...`），它只说明 API 路由，不再进入容量推算、权重拟合、剩余 Token 或可用时间投影。
+- 验证：目标源码/Worker/脚本检索均为 0 命中；旧 wire 字段仅在负向回归测试中作为输入并确认被丢弃。聚焦数据流测试 90/90、全量 lint、Hub build 13/13 通过。全量 `npm run verify` 3483 通过、2 失败：既有 Windows symlink `EPERM`，以及一次并行环境中的 Undici `bad port`；后者单独复跑通过。
 
 ## 上一轮
 
@@ -42,9 +40,5 @@
 
 ## 已知限制
 
-- 「充值/部分回充」与「满额重置」在无可靠 server 重置时间戳时不可区分，周期边界沿用百分比回升 >1 的
-  启发式（`quotaTokenEstimate.js` 已注释说明）。
-- OpenCode Go 官方 API 不返回 `used`/`limit`，只给 percentage；剩余额度由百分比 + 官方总额度推导。
-- `opencode` 的 token 统计依赖 tokscale 在本机（或 WSL）读到 `opencode.db`；本机无误记录时 token 显示 0
-  是数据缺失而非渲染 bug。
+- 旧版 `settings.json` 中可能仍有废弃的 `quotaTokenEstimate` 键；新版不读取、不回写，也不会向 renderer 暴露或产生计算调用。
 - 源会话未记录工作目录时工作空间显示 `—`（历史遗留）。

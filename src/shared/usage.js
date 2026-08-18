@@ -9,7 +9,6 @@ const DISJOINT_REASONING_CLIENTS = new Set([REASONIX_CLIENT, 'dsh']);
 const { filterReasonixSyntheticSessions, isReasonixSyntheticSession } = require('./reasonixSessionGuard');
 const { canonicalProjectKey, deterministicProjectLabel } = require('./projectKey');
 const { normalizeSyncUploadIntervalMs, staleAfterMsForSyncUpload } = require('./syncUploadInterval');
-const { normalizeSyncSnapshot: normalizeQuotaTokenEstimate } = require('./quotaTokenEstimate');
 const TOKEN_KEYS = ['totalTokens', 'total_tokens', 'totalTokenCount', 'total_token_count', 'tokens', 'tokenCount', 'token_count'];
 // Additive components for a token total. `reasoning` is deliberately excluded for ordinary clients:
 // OpenAI/Codex report reasoning_output_tokens WITHIN output_tokens (tokscale's `output` already
@@ -159,6 +158,12 @@ function emptyPeriod() {
     modelUnclassifiedTokens: {},
     clientModels: {},
     clientModelCosts: {},
+    providerTokens: {},
+    providerCosts: {},
+    providerCacheReads: {},
+    providerCacheWrites: {},
+    providerOutputs: {},
+    clientProviders: {},
     projects: Object.create(null),
     sessions: {}
   };
@@ -681,6 +686,33 @@ function normalizePeriod(input, options = {}) {
       }
     }
   }
+  for (const [field, target] of [
+    ['providerTokens', period.providerTokens],
+    ['providerCosts', period.providerCosts],
+    ['providerCacheReads', period.providerCacheReads],
+    ['providerCacheWrites', period.providerCacheWrites],
+    ['providerOutputs', period.providerOutputs]
+  ]) {
+    if (!input[field] || typeof input[field] !== 'object') continue;
+    for (const [provider, value] of Object.entries(input[field])) {
+      const key = normalizeProviderName(provider);
+      if (!key) continue;
+      const amount = field === 'providerCosts' ? asNumber(value) : Math.max(0, Math.round(asNumber(value)));
+      target[key] = (target[key] || 0) + amount;
+    }
+  }
+  if (input.clientProviders && typeof input.clientProviders === 'object') {
+    for (const [client, providers] of Object.entries(input.clientProviders)) {
+      const clientKey = normalizeClientName(client);
+      if (!clientKey || !providers || typeof providers !== 'object') continue;
+      for (const [provider, value] of Object.entries(providers)) {
+        const providerKey = normalizeProviderName(provider);
+        if (!providerKey) continue;
+        if (!period.clientProviders[clientKey]) period.clientProviders[clientKey] = {};
+        period.clientProviders[clientKey][providerKey] = (period.clientProviders[clientKey][providerKey] || 0) + Math.max(0, Math.round(asNumber(value)));
+      }
+    }
+  }
   if (input.sessions && typeof input.sessions === 'object') {
     for (const [key, value] of Object.entries(input.sessions)) {
       const session = normalizeSession(value, key);
@@ -724,6 +756,7 @@ function addUsageRowToPeriod(period, row, detectedClient = detectClient(row)) {
   const timedOutputTokens = timedDurationMs > 0 ? output : 0;
   let model = detectModel(row, client);
   if (client === 'cursor' && model === 'auto') model = 'cursor-auto';
+  const provider = normalizeProviderName(row.provider || row.providerID || row.providerId || row.provider_id);
   period.totalTokens += Math.max(0, Math.round(tokens));
   period.costUsd += cost;
   period.cacheReadTokens += cacheRead;
@@ -754,6 +787,17 @@ function addUsageRowToPeriod(period, row, detectedClient = detectClient(row)) {
     if (!period.clientModelCosts[client]) period.clientModelCosts[client] = {};
     period.clientModelCosts[client][model] = (period.clientModelCosts[client][model] || 0) + cost;
   }
+  if (provider && tokens > 0) {
+    period.providerTokens[provider] = (period.providerTokens[provider] || 0) + Math.round(tokens);
+    if (cacheRead > 0) period.providerCacheReads[provider] = (period.providerCacheReads[provider] || 0) + cacheRead;
+    if (cacheWrite > 0) period.providerCacheWrites[provider] = (period.providerCacheWrites[provider] || 0) + cacheWrite;
+    if (output > 0) period.providerOutputs[provider] = (period.providerOutputs[provider] || 0) + output;
+    if (client) {
+      if (!period.clientProviders[client]) period.clientProviders[client] = {};
+      period.clientProviders[client][provider] = (period.clientProviders[client][provider] || 0) + Math.round(tokens);
+    }
+  }
+  if (provider && cost > 0) period.providerCosts[provider] = (period.providerCosts[provider] || 0) + cost;
   const session = sessionFromRow(row);
   if (session) addSession(period, session);
 }
@@ -860,18 +904,6 @@ function normalizeDeviceRecord(record) {
     if (omitted) normalized.periodProjectsOmitted = omitted;
   }
   if (hasOwn(record, 'syncUploadIntervalMs')) normalized.syncUploadIntervalMs = normalizeSyncUploadIntervalMs(record.syncUploadIntervalMs);
-  if (hasOwn(record, 'quotaTokenEstimate')) {
-    const estimate = normalizeQuotaTokenEstimate(record.quotaTokenEstimate);
-    if (estimate) normalized.quotaTokenEstimate = estimate;
-  }
-  if (record.quotaTokenEstimates && typeof record.quotaTokenEstimates === 'object') {
-    const estimates = {};
-    for (const provider of ['codex', 'opencode']) {
-      const estimate = normalizeQuotaTokenEstimate(record.quotaTokenEstimates[provider]);
-      if (estimate) estimates[provider] = estimate;
-    }
-    if (Object.keys(estimates).length) normalized.quotaTokenEstimates = estimates;
-  }
   if (hasOwn(record, 'historyAvailable')) normalized.historyAvailable = record.historyAvailable === true;
   if (hasOwn(record, 'history')) {
     // An explicit null means History is disabled/unavailable. Preserve that
@@ -1088,24 +1120,12 @@ function mergeDeviceRecord(existing, incoming) {
     if (!hasOwn(normalizedIncoming, 'syncUploadIntervalMs') && hasOwn(normalizedExisting, 'syncUploadIntervalMs')) {
       normalizedIncoming.syncUploadIntervalMs = normalizedExisting.syncUploadIntervalMs;
     }
-    if (!hasOwn(normalizedIncoming, 'quotaTokenEstimate') && hasOwn(normalizedExisting, 'quotaTokenEstimate')) {
-      normalizedIncoming.quotaTokenEstimate = normalizedExisting.quotaTokenEstimate;
-    }
     if (!hasOwn(normalizedIncoming, 'osVersion') && hasOwn(normalizedExisting, 'osVersion')) {
       normalizedIncoming.osVersion = normalizedExisting.osVersion;
     }
     if (!hasOwn(normalizedIncoming, 'osName') && hasOwn(normalizedExisting, 'osName')) {
       normalizedIncoming.osName = normalizedExisting.osName;
     }
-  }
-  // Provider-keyed calibration is independently produced. A normal usage tick can
-  // temporarily lack one limits account just as a limits-only tick can, so merge
-  // this additive compatibility field per provider on every update.
-  if (hasOwn(normalizedExisting, 'quotaTokenEstimates')) {
-    normalizedIncoming.quotaTokenEstimates = {
-      ...normalizedExisting.quotaTokenEstimates,
-      ...(normalizedIncoming.quotaTokenEstimates || {})
-    };
   }
   if (!hasIncomingLimits) normalizedIncoming.limits = normalizedExisting.limits;
   else normalizedIncoming.limits = mergeDeviceLimits(normalizedExisting, normalizedIncoming);
@@ -1277,6 +1297,17 @@ function addPeriodInto(target, source) {
       target.clientModelCosts[client][model] = (target.clientModelCosts[client][model] || 0) + cost;
     }
   }
+  for (const field of ['providerTokens', 'providerCosts', 'providerCacheReads', 'providerCacheWrites', 'providerOutputs']) {
+    for (const [provider, value] of Object.entries(source[field] || {})) {
+      target[field][provider] = (target[field][provider] || 0) + value;
+    }
+  }
+  for (const [client, providers] of Object.entries(source.clientProviders || {})) {
+    if (!target.clientProviders[client]) target.clientProviders[client] = {};
+    for (const [provider, tokens] of Object.entries(providers)) {
+      target.clientProviders[client][provider] = (target.clientProviders[client][provider] || 0) + tokens;
+    }
+  }
   for (const [key, project] of Object.entries(source.projects || {})) addProjectInto(target.projects, key, project);
   for (const session of Object.values(source.sessions)) addSession(target, session);
   return target;
@@ -1349,8 +1380,6 @@ function aggregateDevices(devices, staleAfterMs, nowMs = Date.now()) {
       ...(hasOwn(normalized, 'sessionDetailsOmitted') ? { sessionDetailsOmitted: normalized.sessionDetailsOmitted } : {}),
       ...(hasOwn(normalized, 'periodProjectsOmitted') ? { periodProjectsOmitted: normalized.periodProjectsOmitted } : {}),
       ...(hasOwn(normalized, 'syncUploadIntervalMs') ? { syncUploadIntervalMs: normalized.syncUploadIntervalMs } : {}),
-      ...(hasOwn(normalized, 'quotaTokenEstimate') ? { quotaTokenEstimate: normalized.quotaTokenEstimate } : {}),
-      ...(hasOwn(normalized, 'quotaTokenEstimates') ? { quotaTokenEstimates: normalized.quotaTokenEstimates } : {}),
       ...(hasOwn(normalized, 'periodWindows') ? { periodWindows: normalized.periodWindows } : {}),
       periods: normalized.periods,
       limits: normalized.limits

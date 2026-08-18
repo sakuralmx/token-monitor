@@ -5227,158 +5227,6 @@ function renderThirdPartyAccountGroup(label, providers, color) {
   });
 }
 
-let quotaCalibrationSaveKey = '';
-let quotaOpenCodeCalibrationSaveKey = '';
-function quotaCodexEstimateCard(entries) {
-  const config = state.settings?.quotaTokenEstimate || {};
-  const provider = (entries.get('codex') || []).find((item) => item?.status === 'ok');
-  if (!config.enabled || !provider || !window.quotaTokenEstimate) return null;
-  const synced = window.quotaTokenEstimate.selectSyncSnapshot(state.stats?.devices, provider);
-  const estimateConfig = synced ? {
-    ...config,
-    capacity: synced.capacity || config.capacity,
-    reservePercent: synced.reservePercent,
-    weights: synced.weights,
-    calibration: synced.calibration
-  } : config;
-  const official = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.allTime, capacity: 0, weights: estimateConfig.weights });
-  const cumulativeComponents = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.allTime, 'codex');
-  const learned = window.quotaTokenEstimate.advanceCalibration(estimateConfig.calibration, {
-    remainingPercent: official.officialRemainingPercent,
-    localEquivalent: official.localEquivalentUsed,
-    components: cumulativeComponents,
-    resetsAt: official.resetsAt,
-    at: state.stats?.limits?.updatedAt || new Date().toISOString()
-  });
-  const fit = learned.fit || window.quotaTokenEstimate.fitDeductionModel(learned.observations || estimateConfig.calibration?.observations || []);
-  const capacity = fit?.capacity || learned.capacity || Number(estimateConfig.capacity || 0);
-  const effectiveWeights = fit && fit.confidence !== 'low' ? fit.weights : estimateConfig.weights;
-  const value = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.today, capacity, reservePercent: estimateConfig.reservePercent, weights: effectiveWeights });
-  if (learned.changed) {
-    const calibration = { version: 3, last: learned.last, first: learned.first, samples: learned.samples, observations: learned.observations };
-    const key = JSON.stringify(calibration);
-    if (key !== quotaCalibrationSaveKey) {
-      quotaCalibrationSaveKey = key;
-      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { calibration } }); }, 0);
-    }
-  }
-  const card = document.createElement('div');
-  card.className = 'quota-token-card';
-  const officialLabel = value.officialRemainingPercent === null ? '暂不可用' : `${value.officialRemainingPercent}%`;
-  const hours = learned.hoursLeft === null || learned.hoursLeft === undefined ? '正在采集' : `${learned.hoursLeft} 小时`;
-  const todayCodex = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.today, 'codex');
-  const rawModel = window.quotaTokenEstimate.rawCapacityFromObservations(learned.observations || estimateConfig.calibration?.observations || [], todayCodex, { weights: effectiveWeights });
-  const rawCapacityValue = rawModel?.capacity || 0;
-  const remainingPercent = value.officialRemainingPercent;
-  const reservePercent = Math.max(0, Math.min(100, Number(estimateConfig.reservePercent || 0)));
-  const rawRemainingValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * remainingPercent / 100) : 0;
-  const rawConservativeValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * Math.max(0, remainingPercent - reservePercent) / 100) : 0;
-  const rawCapacity = rawCapacityValue ? formatNumber(rawCapacityValue) : '学习中…';
-  const rawRemaining = rawRemainingValue ? formatNumber(rawRemainingValue) : '学习中…';
-  const rawConservative = rawConservativeValue ? formatNumber(rawConservativeValue) : '学习中…';
-  const cacheMix = rawModel?.cacheHitPercent === null || rawModel?.cacheHitPercent === undefined ? '采集中' : `${rawModel.cacheHitPercent}%`;
-  // Q2: when no full cycle has closed yet, the capacity is a cumulative-ratio
-  // extrapolation — label it so the number is not read as a settled estimate.
-  const capacityNote = rawModel?.sourceKind === 'cumulative' ? '（累计口径）' : '';
-  const cycles = window.quotaTokenEstimate.cycleSummaries(learned.observations || estimateConfig.calibration?.observations || []);
-  const cycleRows = cycles.slice(-6).reverse().map((cycle) => {
-    const date = cycle.startedAt ? new Date(cycle.startedAt).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
-    const status = cycle.current ? '当前周期' : cycle.partial ? '历史周期（部分）' : '历史周期';
-    return `<div class="quota-cycle-row"><span>${date} · ${status}</span><b>${formatNumber(cycle.rawTokens)} Token</b><small>额度 ${cycle.startRemainingPercent}% → ${cycle.endRemainingPercent}% · 缓存 ${formatNumber(cycle.components.cacheRead)} · 未缓存 ${formatNumber(cycle.components.input)} · 输出 ${formatNumber(cycle.components.output)}</small></div>`;
-  }).join('');
-  card.innerHTML = `<strong>GPT 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}${capacityNote}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>保守剩余 Token <b>${rawConservative}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>预计还能使用 <b>${hours}</b></span><span>多设备今日 Codex Token <b>${formatNumber(todayCodex.total)}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section>`;
-  return card;
-}
-
-function quotaOpenCodeEstimateCard(entries) {
-  const config = state.settings?.quotaTokenEstimate || {};
-  // OpenCode Go is the quota-metered subscription (session/weekly/monthly
-  // percentage windows). Only that account yields a percentage the estimator can
-  // anchor on; a Zen-only account has a balance but no quota windows.
-  const provider = (entries.get('opencode') || []).find((item) => item?.status === 'ok' && item?.accountLabel === 'Go');
-  if (!config.enabled || !provider || !window.quotaTokenEstimate) return null;
-  const synced = window.quotaTokenEstimate.selectSyncSnapshot(state.stats?.devices, provider);
-  const estimateConfig = synced ? {
-    ...config,
-    capacity: synced.capacity || config.capacity,
-    reservePercent: synced.reservePercent,
-    weights: synced.weights,
-    opencodeCalibration: synced.calibration
-  } : config;
-  // Provider histories are independent. Missing OpenCode history starts empty;
-  // never seed a Go estimate from the Codex subscription's observations.
-  const calibration = estimateConfig.opencodeCalibration || null;
-  const official = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.allTime, capacity: 0, weights: estimateConfig.weights });
-  const cumulativeComponents = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.allTime, 'opencode');
-  const learned = window.quotaTokenEstimate.advanceCalibration(calibration, {
-    remainingPercent: official.officialRemainingPercent,
-    localEquivalent: official.localEquivalentUsed,
-    components: cumulativeComponents,
-    resetsAt: official.resetsAt,
-    at: state.stats?.limits?.updatedAt || new Date().toISOString()
-  });
-  if (learned.changed) {
-    const next = { version: 3, last: learned.last, first: learned.first, samples: learned.samples, observations: learned.observations };
-    const key = JSON.stringify(next);
-    if (key !== quotaOpenCodeCalibrationSaveKey) {
-      quotaOpenCodeCalibrationSaveKey = key;
-      setTimeout(() => { void saveSettings({ quotaTokenEstimate: { opencodeCalibration: next } }); }, 0);
-    }
-  }
-  const fit = learned.fit || window.quotaTokenEstimate.fitDeductionModel(learned.observations || calibration?.observations || []);
-  const capacity = fit?.capacity || learned.capacity || Number(estimateConfig.capacity || 0);
-  const effectiveWeights = fit && fit.confidence !== 'low' ? fit.weights : estimateConfig.weights;
-  const value = window.quotaTokenEstimate.estimate({ provider, period: state.stats?.periods?.today, capacity, reservePercent: estimateConfig.reservePercent, weights: effectiveWeights });
-  const card = document.createElement('div');
-  card.className = 'quota-token-card';
-  const officialLabel = value.officialRemainingPercent === null ? '暂不可用' : `${value.officialRemainingPercent}%`;
-  const hours = learned.hoursLeft === null || learned.hoursLeft === undefined ? '正在采集' : `${learned.hoursLeft} 小时`;
-  const todayOpenCode = window.quotaTokenEstimate.clientComponents(state.stats?.periods?.today, 'opencode');
-  const rawModel = window.quotaTokenEstimate.rawCapacityFromObservations(learned.observations || calibration?.observations || [], todayOpenCode, { weights: effectiveWeights });
-  const rawCapacityValue = rawModel?.capacity || 0;
-  const remainingPercent = value.officialRemainingPercent;
-  const rawRemainingValue = rawCapacityValue && remainingPercent !== null ? Math.round(rawCapacityValue * remainingPercent / 100) : 0;
-  const rawCapacity = rawCapacityValue ? formatNumber(rawCapacityValue) : '学习中…';
-  const rawRemaining = rawRemainingValue ? formatNumber(rawRemainingValue) : '学习中…';
-  const cacheMix = rawModel?.cacheHitPercent === null || rawModel?.cacheHitPercent === undefined ? '采集中' : `${rawModel.cacheHitPercent}%`;
-  const capacityNote = rawModel?.sourceKind === 'cumulative' ? '（累计口径）' : '';
-  const cycles = window.quotaTokenEstimate.cycleSummaries(learned.observations || calibration?.observations || []);
-  const cycleRows = cycles.slice(-6).reverse().map((cycle) => {
-    const date = cycle.startedAt ? new Date(cycle.startedAt).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
-    const status = cycle.current ? '当前周期' : cycle.partial ? '历史周期（部分）' : '历史周期';
-    return `<div class="quota-cycle-row"><span>${date} · ${status}</span><b>${formatNumber(cycle.rawTokens)} Token</b><small>额度 ${cycle.startRemainingPercent}% → ${cycle.endRemainingPercent}% · 缓存 ${formatNumber(cycle.components.cacheRead)} · 未缓存 ${formatNumber(cycle.components.input)} · 输出 ${formatNumber(cycle.components.output)}</small></div>`;
-  }).join('');
-  // Functional parity does not mean field-for-field duplication. The Go card
-  // focuses on the subscription decisions the user can act on; model/tool totals
-  // remain available in their dedicated dashboard views.
-  card.innerHTML = `<strong>OpenCode Go 额度趋势</strong><div><span>官方剩余额度 <b>${officialLabel}</b></span><span>预估总容量 <b>${rawCapacity}${capacityNote}</b></span><span>预估剩余 Token <b>${rawRemaining}</b></span><span>当前缓存命中比例 <b>${cacheMix}</b></span><span>预计还能使用 <b>${hours}</b></span></div><section class="quota-cycle-history"><strong>额度周期 Token 记录</strong>${cycleRows || '<small>正在采集第一个周期…</small>'}</section>`;
-  return card;
-}
-
-function quotaTokenEstimateCard(entries) {
-  const config = state.settings?.quotaTokenEstimate || {};
-  if (!config.enabled) return null;
-  const codexCard = quotaCodexEstimateCard(entries);
-  const openCodeCard = quotaOpenCodeEstimateCard(entries);
-  if (!codexCard && !openCodeCard) return null;
-  const wrap = document.createElement('div');
-  wrap.className = 'quota-token-cards';
-  if (codexCard) wrap.append(codexCard);
-  if (openCodeCard) wrap.append(openCodeCard);
-  return wrap;
-}
-
-// Cheap existence check used only to keep the render-cache signature accurate
-// (whether the quota card container will occupy one child slot), without running
-// the full card construction twice.
-function quotaTokenEstimatePresent(entries) {
-  const config = state.settings?.quotaTokenEstimate || {};
-  if (!config.enabled) return false;
-  const codexOk = (entries.get('codex') || []).some((item) => item?.status === 'ok');
-  const openCodeGo = (entries.get('opencode') || []).some((item) => item?.status === 'ok' && item?.accountLabel === 'Go');
-  return codexOk || openCodeGo;
-}
-
 function renderLimits() {
   if (!els.limitsPanel) return;
   const holdLimitDetailTooltipRender = limitDetailTooltipShouldHoldRender();
@@ -5402,7 +5250,6 @@ function renderLimits() {
       : [{ provider: id, status: 'disabled', windows: [] }];
     return [id, providerEntries];
   }));
-  const quotaCards = quotaTokenEstimatePresent(visibleProviderEntries);
   const renderSignature = JSON.stringify({
     locale: currentLocale(),
     minute: Math.floor(Date.now() / 60000),
@@ -5414,7 +5261,6 @@ function renderLimits() {
       state.settings?.maskLimitAccountEmails === true,
       state.settings?.showLimitUsed === true,
       state.settings?.showToolIcons !== false,
-      state.settings?.quotaTokenEstimate || {},
       state.settings?.claudePrepaidBalanceEnabled !== false,
       state.settings?.currency || '',
       state.settings?.currencyRatesEffective || null,
@@ -5426,19 +5272,16 @@ function renderLimits() {
       state.codexSystemSwitchError || ''
     ],
     providerOrder: orderedProviders.map(({ id }) => id),
-    providers: [...visibleProviderEntries.entries()],
-    quotaCards
+    providers: [...visibleProviderEntries.entries()]
   });
   if (
     state.limitPanelRenderSignature === renderSignature
-    && els.limitsPanel.children.length === orderedProviders.length + (quotaCards ? 1 : 0)
+    && els.limitsPanel.children.length === orderedProviders.length
   ) {
     return;
   }
   state.limitPanelRenderSignature = renderSignature;
   const nodes = [];
-  const estimateCard = quotaTokenEstimateCard(visibleProviderEntries);
-  if (estimateCard) nodes.push(estimateCard);
   const rows = orderedProviders;
   if (rows.length === 0) {
     els.limitsPanel.replaceChildren();
@@ -8602,13 +8445,6 @@ function syncSettingsForm() {
   els.limitsRefreshInput.value = state.settings.limitsRefreshMode === 'adaptive'
     ? 'adaptive'
     : String(LIMIT_REFRESH_OPTIONS.includes(Number(state.settings.limitsRefreshMs)) ? state.settings.limitsRefreshMs : 300000);
-  const quotaConfig = state.settings.quotaTokenEstimate || {};
-  const quotaEnabled = document.getElementById('quotaEstimateEnabledInput');
-  const quotaCapacity = document.getElementById('quotaEstimateCapacityInput');
-  const quotaReserve = document.getElementById('quotaEstimateReserveInput');
-  if (quotaEnabled) quotaEnabled.checked = quotaConfig.enabled === true;
-  if (quotaCapacity) quotaCapacity.value = quotaConfig.capacity || '';
-  if (quotaReserve) quotaReserve.value = quotaConfig.reservePercent || 0;
   if (els.limitsRefreshAdaptiveNote) {
     els.limitsRefreshAdaptiveNote.classList.toggle('hidden', state.settings.limitsRefreshMode !== 'adaptive');
   }
@@ -11339,19 +11175,6 @@ els.limitsRefreshInput.addEventListener('change', async () => {
     : { limitsRefreshMode: 'fixed', limitsRefreshMs: Number(value) });
   await refreshStats({ force: true });
 });
-async function saveQuotaTokenEstimate() {
-  const enabled = document.getElementById('quotaEstimateEnabledInput');
-  const capacity = document.getElementById('quotaEstimateCapacityInput');
-  const reserve = document.getElementById('quotaEstimateReserveInput');
-  await saveSettings({ quotaTokenEstimate: {
-    ...(state.settings?.quotaTokenEstimate || {}), enabled: enabled?.checked === true,
-    capacity: Number(capacity?.value || 0), reservePercent: Number(reserve?.value || 0)
-  } });
-  renderLimits();
-}
-document.getElementById('quotaEstimateEnabledInput')?.addEventListener('change', saveQuotaTokenEstimate);
-document.getElementById('quotaEstimateCapacityInput')?.addEventListener('change', saveQuotaTokenEstimate);
-document.getElementById('quotaEstimateReserveInput')?.addEventListener('change', saveQuotaTokenEstimate);
 els.showLimitSourceInput.addEventListener('change', async () => {
   await saveSettings({ showLimitSource: els.showLimitSourceInput.checked });
 });

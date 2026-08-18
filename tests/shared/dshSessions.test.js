@@ -11,6 +11,8 @@ const {
   detectBackend,
   dshEntryFromDir,
   hasZstdMagic,
+  providerByModelOf,
+  providerNamesOf,
   resetBackendCache,
   scanDshSessions,
   scanZstdFrames
@@ -167,6 +169,7 @@ test('decompressZstd reconstructs a multi-frame stream via node:zlib', { skip: !
   const eventFrame = zlib.zstdCompressSync(Buffer.from(jsonl.split('\n').slice(1).join('\n') + '\n'));
   const out = decompressZstd(Buffer.concat([headerFrame, eventFrame]), {});
   assert.equal(out.toString('utf8'), jsonl + '\n');
+  assert.deepEqual(providerNamesOf(out.toString('utf8').split('\n')), ['deepseek-official']);
   resetBackendCache();
 });
 
@@ -188,6 +191,31 @@ test('detectBackend reports a clear unavailable state when forced', () => {
   const backend = detectBackend({ zlibModule: {}, zstdPath: 'definitely-not-a-real-binary' });
   assert.equal(backend.kind, 'none');
   resetBackendCache();
+});
+
+test('providerNamesOf reads nested provider identity from assistant messages', () => {
+  const lines = dshJsonl().split('\n');
+  assert.deepEqual(providerNamesOf(lines), ['deepseek-official']);
+  assert.deepEqual([...providerByModelOf(lines)], [['deepseek-v4-pro', 'deepseek-official']]);
+});
+
+test('providerByModelOf prefers DSH route ids such as yx over protocol families', () => {
+  const lines = dshJsonl().split('\n');
+  const messageIndex = lines.findIndex((line) => line.includes('assistant/message'));
+  const message = JSON.parse(lines[messageIndex]);
+  message.data.message.source.provider = 'yx';
+  message.data.message.source.replayState = { provider: 'yx', model: 'deepseek-v4-pro' };
+  lines[messageIndex] = JSON.stringify(message);
+  assert.deepEqual([...providerByModelOf(lines)], [['deepseek-v4-pro', 'yx']]);
+});
+
+test('providerByModelOf drops ambiguous model routes instead of guessing', () => {
+  const lines = dshJsonl().split('\n');
+  const second = JSON.parse(lines.find((line) => line.includes('assistant/message')));
+  second.data.message.source.provider = 'yx';
+  second.data.message.source.replayState = { provider: 'yx', model: 'deepseek-v4-pro' };
+  lines.push(JSON.stringify(second));
+  assert.deepEqual([...providerByModelOf(lines)], []);
 });
 
 test('scanDshSessions reads the header cwd and the session/title event', () => {
