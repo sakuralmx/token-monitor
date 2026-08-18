@@ -959,6 +959,27 @@ function addClientModelUsage(target, source, client) {
   }
 }
 
+function addClientProviderUsage(target, source, client) {
+  for (const [provider, tokens] of Object.entries(source.clientProviders?.[client] || {})) {
+    target.providerTokens[provider] = (target.providerTokens[provider] || 0) + tokens;
+    if (!target.clientProviders[client]) target.clientProviders[client] = {};
+    target.clientProviders[client][provider] = (target.clientProviders[client][provider] || 0) + tokens;
+
+    // Provider component and cost maps are not client×provider maps. Preserve
+    // them only when this client owns the complete source provider bucket;
+    // otherwise there is no exact way to separate this client's contribution.
+    if (asNumber(source.providerTokens?.[provider]) !== asNumber(tokens)) continue;
+    const cost = asNumber(source.providerCosts?.[provider]);
+    const cacheRead = Math.min(tokens, asNumber(source.providerCacheReads?.[provider]));
+    const cacheWrite = Math.min(tokens - cacheRead, asNumber(source.providerCacheWrites?.[provider]));
+    const output = Math.min(tokens - cacheRead - cacheWrite, asNumber(source.providerOutputs?.[provider]));
+    if (cost !== 0) target.providerCosts[provider] = (target.providerCosts[provider] || 0) + cost;
+    if (cacheRead > 0) target.providerCacheReads[provider] = (target.providerCacheReads[provider] || 0) + cacheRead;
+    if (cacheWrite > 0) target.providerCacheWrites[provider] = (target.providerCacheWrites[provider] || 0) + cacheWrite;
+    if (output > 0) target.providerOutputs[provider] = (target.providerOutputs[provider] || 0) + output;
+  }
+}
+
 function addClientSessionUsage(target, client, sessions, restoredSessions, projectsEnabled) {
   for (const [key, session] of Object.entries(sessions || {})) {
     if (session?.client !== client) continue;
@@ -1026,6 +1047,7 @@ function preserveUntrackedClientUsage(existingRecord, incomingRecord, trackedCli
       if (unclassified > 0) target.clientUnclassifiedTokens[client] = unclassified;
       if (unclassified > 0) target.capabilities.tokenComponents = false;
       addClientModelUsage(target, source, client);
+      addClientProviderUsage(target, source, client);
       addClientSessionUsage(target, client, source.sessions, restoredSessions, projectsEnabled);
     }
     if (!projectsEnabled) continue;

@@ -534,6 +534,70 @@ test('mergeDeviceRecord preserves usage for clients omitted by the active tracke
   });
 });
 
+test('mergeDeviceRecord preserves provider attribution for clients removed from trackedClients', () => {
+  const existing = {
+    deviceId: 'macbook',
+    trackedClients: ['codex', 'opencode'],
+    updatedAt: '2026-05-30T12:00:00.000Z',
+    today: {
+      totalTokens: 100,
+      costUsd: 1.5,
+      cacheReadTokens: 60,
+      cacheWriteTokens: 10,
+      outputTokens: 20,
+      clients: { opencode: 100 },
+      clientCosts: { opencode: 1.5 },
+      clientCacheReads: { opencode: 60 },
+      clientCacheWrites: { opencode: 10 },
+      clientOutputs: { opencode: 20 },
+      providerTokens: { 'opencode-go': 100 },
+      providerCosts: { 'opencode-go': 1.5 },
+      providerCacheReads: { 'opencode-go': 60 },
+      providerCacheWrites: { 'opencode-go': 10 },
+      providerOutputs: { 'opencode-go': 20 },
+      clientProviders: { opencode: { 'opencode-go': 100 } }
+    }
+  };
+  const incoming = {
+    deviceId: 'macbook',
+    trackedClients: ['codex'],
+    updatedAt: '2026-05-30T12:01:00.000Z',
+    today: {
+      totalTokens: 10,
+      costUsd: 0.1,
+      cacheReadTokens: 4,
+      cacheWriteTokens: 1,
+      outputTokens: 3,
+      clients: { codex: 10 },
+      clientCosts: { codex: 0.1 },
+      clientCacheReads: { codex: 4 },
+      clientCacheWrites: { codex: 1 },
+      clientOutputs: { codex: 3 },
+      providerTokens: { openai: 10 },
+      providerCosts: { openai: 0.1 },
+      providerCacheReads: { openai: 4 },
+      providerCacheWrites: { openai: 1 },
+      providerOutputs: { openai: 3 },
+      clientProviders: { codex: { openai: 10 } }
+    }
+  };
+
+  const period = mergeDeviceRecord(existing, incoming).periods.today;
+
+  assert.equal(period.totalTokens, 110);
+  assert.deepEqual(period.clients, { codex: 10, opencode: 100 });
+  assert.deepEqual(period.providerTokens, { openai: 10, 'opencode-go': 100 });
+  assert.deepEqual(period.providerCosts, { openai: 0.1, 'opencode-go': 1.5 });
+  assert.deepEqual(period.providerCacheReads, { openai: 4, 'opencode-go': 60 });
+  assert.deepEqual(period.providerCacheWrites, { openai: 1, 'opencode-go': 10 });
+  assert.deepEqual(period.providerOutputs, { openai: 3, 'opencode-go': 20 });
+  assert.deepEqual(period.clientProviders, {
+    codex: { openai: 10 },
+    opencode: { 'opencode-go': 100 }
+  });
+  assert.equal(Object.values(period.providerTokens).reduce((sum, tokens) => sum + tokens, 0), period.totalTokens);
+});
+
 test('mergeDeviceRecord marks unrecoverable all-time project attribution incomplete', () => {
   const existing = {
     deviceId: 'macbook',
