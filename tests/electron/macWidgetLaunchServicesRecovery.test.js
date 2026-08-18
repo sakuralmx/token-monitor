@@ -137,7 +137,13 @@ test('missing packaged Widget artifacts do not launch or create marker state', a
 });
 
 test('symlinked packaged Widget artifacts never launch or create marker state', async () => {
-  for (const artifact of ['host', 'appex', 'helper']) {
+  // Windows can create directory junctions without Developer Mode, but file
+  // symlinks require an elevated token. Cover the helper's symlink metadata
+  // through the injected fs boundary below instead of making verify privilege-dependent.
+  const realSymlinkArtifacts = process.platform === 'win32'
+    ? ['host', 'appex']
+    : ['host', 'appex', 'helper'];
+  for (const artifact of realSymlinkArtifacts) {
     const setup = fixture();
     try {
       const target = artifact === 'host'
@@ -158,6 +164,37 @@ test('symlinked packaged Widget artifacts never launch or create marker state', 
         execFile: () => { launches += 1; }
       });
 
+      assert.deepEqual(await run(recover, setup), {
+        status: 'skipped',
+        reason: 'artifacts-missing'
+      });
+      assert.equal(launches, 0);
+      assert.equal(fs.existsSync(setup.userDataPath), false);
+    } finally {
+      setup.cleanup();
+    }
+  }
+
+  if (process.platform === 'win32') {
+    const setup = fixture();
+    let launches = 0;
+    const helperPath = path.join(setup.resourcesPath, 'TokenMonitorWidgetReloader');
+    const fsApi = Object.create(fs);
+    fsApi.lstatSync = (candidate, options) => {
+      const stat = fs.lstatSync(candidate, options);
+      if (candidate !== helperPath) return stat;
+      return new Proxy(stat, {
+        get(target, property, receiver) {
+          if (property === 'isSymbolicLink') return () => true;
+          return Reflect.get(target, property, receiver);
+        }
+      });
+    };
+    try {
+      const recover = createMacWidgetLaunchServicesRecovery({
+        fs: fsApi,
+        execFile: () => { launches += 1; }
+      });
       assert.deepEqual(await run(recover, setup), {
         status: 'skipped',
         reason: 'artifacts-missing'
