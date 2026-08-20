@@ -27,3 +27,6 @@ devlog/
 # Godot
 .godot/
 # Node
+
+docs/usage-snapshots/
+
