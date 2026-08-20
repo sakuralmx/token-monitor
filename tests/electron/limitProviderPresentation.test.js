@@ -188,6 +188,7 @@ function runProviderSpendNode(source, balance) {
   const spendNode = functionBody(source, 'providerSpendNode', 'thirdPartySpendNode');
   const context = {
     formatMoney: (value, currency) => `${currency} ${Number(value).toFixed(2)}`,
+    formatBalanceSpendAmount: (value, balance) => `${balance?.currency || ''} ${Number(value).toFixed(2)}`.trim(),
     limitNoteRowNode: (options) => options
   };
   vm.runInNewContext(
@@ -725,8 +726,10 @@ test('provider tray badges are opt-in and keep monochrome assets visible', () =>
   assert.match(app, /showTrayProviderBadgeInput: document\.getElementById\('showTrayProviderBadgeInput'\)/);
   assert.match(app, /saveSettings\(\{ showTrayProviderBadge: els\.showTrayProviderBadgeInput\.checked \}\)/);
   assert.match(app, /deliverTrayProviderIcons\(patch\.showTrayProviderBadge === true\)/);
-  // `trayInk` is what lets a flat-ink mark be re-inked for the taskbar it will sit on.
-  assert.match(app, /providerImageToPngDataUrl\(img, 44, showBadge, \{ trayInk: true \}\)/);
+  // `trayInk` is what lets a flat-ink mark be re-inked for the taskbar it will sit
+  // on; `standalone` is what lets it fill the Windows cell instead of carrying the
+  // optical inset a composed icon needs (#314).
+  assert.match(app, /providerImageToPngDataUrl\(img, 44, showBadge, \{ trayInk: true, standalone: true \}\)/);
   // A system-theme flip invalidates BOTH tray bitmap caches. Repainting only the
   // generated one leaves the usage modes showing the provider icon main cached
   // under the old ink, which is the whole bug on a taskbar that just went dark.
@@ -766,6 +769,33 @@ test('Grok renders its single Monthly billing window full-width instead of an em
   assert.match(renderProviderWindows, /windowForKind\(provider, 'billing'\)/);
   assert.match(renderProviderWindows, /limitWindowNode\(monthly\.label \|\| 'Monthly', monthly, color, 0\.68\)/);
   assert.match(renderProviderWindows, /limit-window-wide/);
+});
+
+test('WorkBuddy renders unlimited enterprise credits without requiring a numeric balance', () => {
+  const app = readRendererFile('app.js');
+  const valueFunction = functionBody(app, 'workbuddyCreditsValue', 'mimoTokenPlanWindowFromBalance');
+  const renderProviderWindows = functionBody(app, 'renderProviderWindows', 'renderLimitProviderRow');
+  const value = vm.runInNewContext(
+    `${valueFunction}\nworkbuddyCreditsValue({ balance: { amount: null, currency: 'CREDITS' } }, { detail: 'unlimited', remaining: null });`,
+    {
+      creditsAmount: () => null,
+      formatCompactMoney: () => '',
+      t: (key) => key === 'settings.thirdparty.unlimited' ? 'Unlimited' : key
+    }
+  );
+
+  assert.equal(value, 'Unlimited');
+  assert.match(renderProviderWindows, /const value = workbuddyCreditsValue\(provider, credits\);/);
+  assert.match(renderProviderWindows, /if \(credits && value\)/);
+  assert.doesNotMatch(renderProviderWindows, /if \(credits && amount !== null\)/);
+  assert.match(
+    renderProviderWindows,
+    /const displayWindow = \{\s*\.\.\.credits,\s*label: credits\.label \|\| 'Credits'\s*\};/
+  );
+  assert.match(
+    renderProviderWindows,
+    /if \(!displayWindow\.resetsAt && !displayWindow\.resetDescription\) \{\s*node\.classList\.add\('limit-window-no-reset'\);\s*\}/
+  );
 });
 
 test('Antigravity groups returned quota windows under dynamic model-family headings', () => {
@@ -1090,8 +1120,8 @@ test('Home uses explicit billing labels so Copilot Premium and Chat stay distinc
   assert.match(homeModule, /value\.textContent = window\.value \|\| formatHomeLimitWindowValue\(window, showUsed\);/);
   assert.match(homeModule, /limitProviderCompactWindowPeriodLabel\(row\.providerId, window, row\.windows\)/);
   assert.match(homeModule, /`\$\{periodLabel\} · \$\{resetLabel\}`/);
-  assert.match(valueFormatter, /if \(window\?\.metric === 'credits'\) \{/);
-  assert.match(valueFormatter, /return formatCompactMoney\(window\.remaining, window\.currency\);/);
+  assert.match(valueFormatter, /if \(isCreditsWindow\(window\)\) \{/);
+  assert.match(valueFormatter, /formatCompactMoney\(window\.remaining, window\.currency\)/);
   assert.match(valueFormatter, /`\$\{formatPercent\(percent\)\} \$\{limitModeSuffix\(showUsed\)\}`/);
   assert.doesNotMatch(i18n, /home\.limit\.(balance|leftPercent|leftAmount)/);
 });
@@ -1164,6 +1194,7 @@ test('shared spend presentation preserves zeroes and omits missing periods', () 
   assert.equal(missingWeek.summary, 'Today CNY 0.00 · Month CNY 2.50');
   assert.deepEqual(missingWeek.detailEntries.map(([label]) => label), ['Today', 'Month', 'All time']);
   assert.equal(missingWeek.ariaParts.some((part) => part.startsWith('Week ')), false);
+
 });
 
 test('Balance and token quota values omit the redundant left suffix', () => {
@@ -2012,14 +2043,16 @@ test('copilot setup status asks for sign-in instead of an API key', () => {
   );
 });
 
-test('Z.ai, Volcengine, Qoder, and Ollama source labels and setup statuses', () => {
+test('Z.ai, Volcengine, Qoder, WorkBuddy, and Ollama source labels and setup statuses', () => {
   assert.deepEqual(presentation.limitProviderCapabilityTags('zai'), ['Coding Plan', 'API key']);
   assert.deepEqual(presentation.limitProviderCapabilityTags('volcengine'), ['Coding Plan', 'API key']);
   assert.deepEqual(presentation.limitProviderCapabilityTags('qoder'), ['Manual login', 'Web']);
+  assert.deepEqual(presentation.limitProviderCapabilityTags('workbuddy'), ['Auto', 'Desktop app']);
   assert.deepEqual(presentation.limitProviderCapabilityTags('ollama'), ['Manual login', 'Web']);
   assert.equal(presentation.limitProviderSourceLabel({ provider: 'zai', source: 'api' }), 'API');
   assert.equal(presentation.limitProviderSourceLabel({ provider: 'volcengine', source: 'api' }), 'API');
   assert.equal(presentation.limitProviderSourceLabel({ provider: 'qoder', source: 'web' }), 'Web');
+  assert.equal(presentation.limitProviderSourceLabel({ provider: 'workbuddy', source: 'local' }), 'Local');
   assert.equal(presentation.limitProviderSourceLabel({ provider: 'ollama', source: 'web' }), 'Web');
   assert.deepEqual(
     presentation.limitProviderStatusLabel({ provider: 'zai', status: 'notConfigured' }),
@@ -2035,6 +2068,14 @@ test('Z.ai, Volcengine, Qoder, and Ollama source labels and setup statuses', () 
   );
   assert.deepEqual(
     presentation.limitProviderStatusLabel({ provider: 'qoder', status: 'unauthorized' }),
+    { label: 'Sign in again', tone: 'setup' }
+  );
+  assert.deepEqual(
+    presentation.limitProviderStatusLabel({ provider: 'workbuddy', status: 'notConfigured' }),
+    { label: 'Sign in', tone: 'setup' }
+  );
+  assert.deepEqual(
+    presentation.limitProviderStatusLabel({ provider: 'workbuddy', status: 'unauthorized' }),
     { label: 'Sign in again', tone: 'setup' }
   );
   assert.deepEqual(

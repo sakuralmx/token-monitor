@@ -8,7 +8,7 @@ const chokidar = require('chokidar');
 const semver = require('semver');
 const { readJson, sharedDataDir } = require('./config');
 const { appVersion } = require('./appVersion');
-const { normalizeClientsCsv } = require('./clientTracking');
+const { normalizeClientsCsv, PARSE_LOCAL_CLIENTS } = require('./clientTracking');
 const {
   CLIENT_HEALTH_VERSION,
   MAX_SYNC_DETAIL_INPUT_LENGTH,
@@ -17,6 +17,7 @@ const {
   deriveClientOverall
 } = require('./clientHealth');
 const { tokscalePackageNameForPlatform, tokscalePlatformKey } = require('./tokscalePlatform');
+const { createTokscaleCapabilityResolver, filterSupportedClients, parseSupportedClients } = require('./tokscaleCapabilities');
 const { customPricingPath, tokscaleCacheDirs } = require('./tokscaleConfig');
 const {
   applyPeriodDelta,
@@ -32,6 +33,7 @@ const { hermesProfileWatchDirs, resolveHermesHome } = require('./hermesProfiles'
 const { localDayKey, mergeHistories, parseGraphResult, normalizeHistory } = require('./history');
 const { retainDailyHistory, retainLiveDailyHistory } = require('./dailyHistoryArchive');
 const cursorAuth = require('./cursorAuth');
+const { claudeSessionRoots } = require('./claudePaths');
 const { findSessionFiles, codexSessionFile } = require('./sessionFiles');
 const opencodeSession = require('./opencodeSession');
 const { decompressZstd: decompressDshZstd, providerByModelOf } = require('./dshSessions');
@@ -44,7 +46,8 @@ const {
   resolveQoderCnPricing
 } = require('./qoderCnUsage');
 const { resolveReasonixStatsDir, REASONIX_SOURCE_CHECK_ID } = require('./reasonixPaths');
-const { cherryStudioRoots } = require('./cherryStudioSessions');
+const { resolveDshSessionsDir, DSH_SOURCE_CHECK_ID } = require('./dshPaths');
+const { indexDshSessionHeaders, readDshSessionHeader, resolveDshSessionsRoot } = require('./dshSessionFiles');
 const {
   createReasonixNativeSessionCache,
   isReasonixNativeSessionPath,
@@ -141,8 +144,13 @@ function resolvePlatformBinary() {
 function tokscaleCommand() {
   const resolved = resolvePlatformBinary();
   const useDirect = Boolean(resolved && resolved.source !== 'shim');
-  if (useDirect) return { bin: resolved.path, prefixArgs: [], env: process.env };
-  return { bin: process.execPath, prefixArgs: [TOKSCALE_BIN_JS], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
+  const command = useDirect
+    ? { bin: resolved.path, prefixArgs: [], env: process.env }
+    : { bin: process.execPath, prefixArgs: [TOKSCALE_BIN_JS], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
+  return {
+    ...command,
+    identity: [resolved?.source || 'none', resolved?.path || '', resolved?.version || '', resolved?.integrity || ''].join('|')
+  };
 }
 
 function parseJsonOutput(stdout) {
@@ -157,8 +165,8 @@ function parseJsonOutput(stdout) {
   throw new Error(`Could not parse tokscale JSON output: ${text.slice(0, 300)}`);
 }
 
-function spawnTokscaleJson(userArgs, commandTimeoutMs) {
-  const { bin, prefixArgs, env } = tokscaleCommand();
+function spawnTokscaleJson(userArgs, commandTimeoutMs, command = tokscaleCommand()) {
+  const { bin, prefixArgs, env } = command;
   return new Promise((resolve, reject) => {
     const child = spawn(bin, [...prefixArgs, ...userArgs], { env, windowsHide: true });
     let stdout = '';
@@ -169,11 +177,45 @@ function spawnTokscaleJson(userArgs, commandTimeoutMs) {
     child.on('error', (error) => { clearTimeout(timeout); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timeout);
-      if (code !== 0) return reject(new Error(`tokscale exited with code ${code}: ${stderr.trim() || stdout.trim()}`));
+      if (code !== 0) {
+        const error = new Error(`tokscale exited with code ${code}: ${stderr.trim() || stdout.trim()}`);
+        error.tokscaleExitCode = code;
+        error.tokscaleStderr = stderr;
+        return reject(error);
+      }
       try { resolve(parseJsonOutput(stdout)); } catch (error) { reject(error); }
     });
   });
 }
+
+const TOKSCALE_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;
+// tokscale rejects an unknown --client value with this exact exit code (see
+// the TOKSCALE_CLIENT_ALIASES comment above) — verified on 4.7.0 and 4.8.0.
+const TOKSCALE_UNKNOWN_CLIENT_EXIT_CODE = 2;
+
+function spawnTokscaleHelp(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.bin, [...command.prefixArgs, '--help'], { env: command.env, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`tokscale capability probe timed out after ${TOKSCALE_CAPABILITY_PROBE_TIMEOUT_MS}ms`));
+    }, TOKSCALE_CAPABILITY_PROBE_TIMEOUT_MS);
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => { clearTimeout(timeout); reject(error); });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) return reject(new Error(`--help exited with code ${code}: ${stderr.trim() || stdout.trim()}`));
+      try { resolve(parseSupportedClients(`${stdout}\n${stderr}`)); } catch (error) { reject(error); }
+    });
+  });
+}
+
+const tokscaleCapabilityResolver = createTokscaleCapabilityResolver({
+  warn: (message) => console.warn(message)
+});
 
 // A few tools surface as one umbrella client in our tracked-client list but as
 // several client ids inside tokscale. Antigravity is the case today: tokscale 4.x
@@ -200,20 +242,72 @@ function tokscaleClientFilter(clients) {
   return ordered.join(',');
 }
 
+function resetTokscaleCapabilityCache() {
+  tokscaleCapabilityResolver.reset();
+}
+
+// Exit code 2 alone is clap's generic "argument parsing failed" code, not a
+// --client-specific one — a malformed value for some other flag would exit
+// the same way. Requiring stderr to actually mention --client keeps a real
+// probe+retry reserved for the one flag this call site varies by binary
+// identity; anything else still surfaces as-is.
+function isUnknownTokscaleClientError(error) {
+  return Boolean(error)
+    && error.tokscaleExitCode === TOKSCALE_UNKNOWN_CLIENT_EXIT_CODE
+    && /--client/i.test(error.tokscaleStderr || '');
+}
+
+// Reactive, not proactive: a binary that recognizes every requested client
+// never pays for a capability probe. Only once tokscale has actually
+// rejected the CSV (exit 2) do we spend one `--help` probe to learn what the
+// resolved binary really supports, then retry with just those ids. A probe
+// success is cached per binary identity so a later tick on the same binary
+// filters proactively instead of failing first; a probe failure is cached
+// too (and warned once) so we don't re-probe on every subsequent failure —
+// the original tokscale error surfaces instead, same as before this filter
+// existed.
+function retryWithKnownCapabilities(error, requested, command, emptyResult, retry) {
+  if (!isUnknownTokscaleClientError(error)) return Promise.reject(error);
+  return tokscaleCapabilityResolver.probe(command.identity, () => spawnTokscaleHelp(command)).then((supported) => {
+    if (!supported) return Promise.reject(error);
+    const filtered = filterSupportedClients(requested, supported);
+    if (filtered === requested) return Promise.reject(error);
+    if (!filtered) return emptyResult;
+    return retry(filtered);
+  });
+}
+
+function applyKnownCapabilityFilter(clientFilter, identity) {
+  const supported = tokscaleCapabilityResolver.known(identity);
+  return supported ? filterSupportedClients(clientFilter, supported) : clientFilter;
+}
+
 function runTokscale({ clients, flags, commandTimeoutMs }) {
-  const clientFilter = tokscaleClientFilter(clients);
+  const command = tokscaleCommand();
+  const requested = tokscaleClientFilter(clients);
+  if (!requested) return Promise.resolve({ entries: [] });
+  const clientFilter = applyKnownCapabilityFilter(requested, command.identity);
   if (!clientFilter) return Promise.resolve({ entries: [] });
-  // Tokscale's session grouping retains a provider field on every row even
-  // though provider is not a legal grouping component alongside session. Keep
-  // the supported grouping so session detail and provider attribution both
-  // survive; requesting client,session,provider,model makes the whole scan fail.
-  return spawnTokscaleJson(['--json', '--client', clientFilter, '--group-by', 'client,session,model', ...flags], commandTimeoutMs);
+  const runArgs = (filter) => ['--json', '--client', filter, '--group-by', 'client,session,model', ...flags];
+  return spawnTokscaleJson(runArgs(clientFilter), commandTimeoutMs, command).catch((error) => (
+    retryWithKnownCapabilities(error, requested, command, { entries: [] }, (filtered) => (
+      spawnTokscaleJson(runArgs(filtered), commandTimeoutMs, command)
+    ))
+  ));
 }
 
 function runTokscaleGraph({ clients, commandTimeoutMs }) {
-  const clientFilter = tokscaleClientFilter(clients);
+  const command = tokscaleCommand();
+  const requested = tokscaleClientFilter(clients);
+  if (!requested) return Promise.resolve({ contributions: [] });
+  const clientFilter = applyKnownCapabilityFilter(requested, command.identity);
   if (!clientFilter) return Promise.resolve({ contributions: [] });
-  return spawnTokscaleJson(['graph', '--client', clientFilter, '--no-spinner'], commandTimeoutMs);
+  const runArgs = (filter) => ['graph', '--client', filter, '--no-spinner'];
+  return spawnTokscaleJson(runArgs(clientFilter), commandTimeoutMs, command).catch((error) => (
+    retryWithKnownCapabilities(error, requested, command, { contributions: [] }, (filtered) => (
+      spawnTokscaleJson(runArgs(filtered), commandTimeoutMs, command)
+    ))
+  ));
 }
 
 function lookupModelPricing(modelId, commandTimeoutMs = 15000) {
@@ -647,6 +741,22 @@ function projectIdentity(value) {
 // stutter once project tracking made this run on every session each tick).
 const jsonlTimestampCache = new Map();
 
+// Keyed by `sessionsRoot\0sessionId` -> { filePath, createdAt, statFingerprint }.
+// DSH sessions are deliberately excluded from sessionTimestampMap's
+// resolvedSessionKeys (so lastUsedAt keeps refreshing), so every known id is
+// looked up again on every tick; this is what turns that into a stat() on an
+// already-known path instead of a fresh walk of the whole DSH sessions tree
+// each time — the same perceived-UI-stutter class jsonlTimestampCache above
+// exists to avoid. The root is part of the key because one collector process
+// decorates both the native home and every running WSL distro's home, and the
+// same session id can exist under more than one root (a cloned/migrated home);
+// a bare-id key would let the second root reuse the first root's file path and
+// timestamps. Module-level (not threaded through collectUsageOnce's per-call
+// deps) so it survives across ticks: collectUsageOnce reconstructs its
+// session-metadata deps fresh on every call, same as jsonlTimestampCache and
+// projectPathCache already rely on being module-level rather than deps-held.
+const dshSessionFileCache = new Map();
+
 function lastJsonlTimestamp(filePath) {
   let stat;
   try { stat = fs.statSync(filePath); } catch (_) { return ''; }
@@ -756,8 +866,17 @@ function sessionTimestampMap(periods, home = os.homedir(), deps = {}) {
     }
   }
 
-  const claudeFiles = findSessionFiles(path.join(home, '.claude', 'projects'), byClient.get('claude') || []);
-  for (const [sessionId, filePath] of claudeFiles) applyFile('claude', sessionId, filePath);
+  const claudeRoots = claudeSessionRoots({
+    homeDir: home,
+    env: deps.env,
+    useEnvRoots: !deps.scopedHome
+  });
+  const claudeIds = byClient.get('claude') || new Set();
+  const projectFiles = findSessionFiles(claudeRoots.projects, claudeIds);
+  for (const [sessionId, filePath] of projectFiles) applyFile('claude', sessionId, filePath);
+  const missingClaudeIds = new Set([...claudeIds].filter((sessionId) => !projectFiles.has(sessionId)));
+  const transcriptFiles = findSessionFiles(claudeRoots.transcripts, missingClaudeIds);
+  for (const [sessionId, filePath] of transcriptFiles) applyFile('claude', sessionId, filePath);
 
   const codexIds = byClient.get('codex') || new Set();
   const missingCodexIds = new Set();
@@ -769,13 +888,87 @@ function sessionTimestampMap(periods, home = os.homedir(), deps = {}) {
   const codexFiles = findSessionFiles(path.join(home, '.codex', 'sessions'), missingCodexIds);
   for (const [sessionId, filePath] of codexFiles) applyFile('codex', sessionId, filePath);
 
+  // DSH session ids are random UUIDs (no embedded timestamp), so the generic
+  // fallback below can never date them. The transcript itself has what we
+  // need: the header's `createdAt` for startedAt, and the file's mtime (an
+  // append-only log, so mtime tracks the last flush) for lastUsedAt. DSH
+  // sessions are deliberately never added to resolvedSessionKeys (see below),
+  // so every id in scope this tick is looked up again on the next one too.
+  // A session, once found, has a file path that never changes — dshFileCache
+  // (persisted across ticks by the caller, like metadataCache) lets a known
+  // id skip straight to statting its own file instead of re-walking the
+  // whole DSH sessions tree; only an id this cache has never seen triggers
+  // that walk, and it resolves every unknown id in the tick at once.
+  const dshIds = byClient.get('dsh') || new Set();
+  if (dshIds.size > 0) {
+    // Falls back to the module-level cache, not a fresh Map: this must
+    // persist across collectUsageOnce calls to do anything, and every
+    // caller that wants test isolation already passes its own Map explicitly.
+    const dshFileCache = deps.dshSessionFileCache || dshSessionFileCache;
+    // dshPaths.js checks env.DSH_HOME before the homeDir it's given, same as
+    // tokscale's own PathRoot::EnvVar — and tokscale's own scanner never lets
+    // that leak into an explicit --home lookup (use_env_roots: false, lib.rs).
+    // scopedHome means `home` is a specific WSL distro, not this machine's
+    // own profile, so a host-configured DSH_HOME must not redirect it back.
+    // The resolved root namespaces the cache key (see dshSessionFileCache).
+    const dshEnv = deps.scopedHome ? {} : (deps.env || process.env);
+    const dshRoot = resolveDshSessionsRoot({ homeDir: home, env: dshEnv, platform: deps.platform });
+    const dshKey = (id) => `${dshRoot}\u0000${id}`;
+    const unresolvedDshIds = [...dshIds].filter((id) => !dshFileCache.has(dshKey(id)));
+    if (unresolvedDshIds.length > 0) {
+      const buildIndex = deps.indexDshSessionHeaders || indexDshSessionHeaders;
+      const index = buildIndex({ homeDir: home, env: dshEnv, platform: deps.platform });
+      for (const [sessionId, entry] of index) {
+        const key = dshKey(sessionId);
+        if (dshFileCache.has(key)) continue;
+        // A stat fingerprint lets an entry whose header was unreadable at
+        // index time (createdAt undefined, directory-name fallback) be re-read
+        // later, once the file actually changes, instead of being stuck on
+        // mtime forever.
+        let statFingerprint = '';
+        try { const st = fs.statSync(entry.filePath); statFingerprint = `${st.size}:${st.mtimeMs}`; } catch (_) { /* file vanished mid-scan */ }
+        dshFileCache.set(key, { ...entry, statFingerprint });
+      }
+    }
+    for (const sessionId of dshIds) {
+      const key = dshKey(sessionId);
+      let entry = dshFileCache.get(key);
+      if (!entry) continue;
+      let lastUsedAt = '';
+      let statFingerprint = '';
+      try {
+        const st = fs.statSync(entry.filePath);
+        lastUsedAt = isoFromDate(st.mtime);
+        statFingerprint = `${st.size}:${st.mtimeMs}`;
+      } catch (_) { /* file vanished mid-scan */ }
+      // A header read earlier may have fallen back to the directory name (no
+      // createdAt) because the file was mid-write or torn. If it has since
+      // grown or been rewritten, re-read the header once to recover the real
+      // createdAt before falling back to mtime. Entries with a known createdAt
+      // are left alone: the header is the first thing written to an
+      // append-only log and never changes, so re-reading it is pure waste.
+      if (entry.createdAt === undefined && statFingerprint && statFingerprint !== entry.statFingerprint) {
+        const refreshed = readDshSessionHeader(entry.filePath);
+        if (refreshed) {
+          entry = { filePath: entry.filePath, createdAt: refreshed.createdAt, statFingerprint };
+        } else {
+          entry.statFingerprint = statFingerprint;
+        }
+        dshFileCache.set(key, entry);
+      }
+      const startedAt = isoFromDate(Number(entry.createdAt));
+      if (!startedAt && !lastUsedAt) continue;
+      metadata.set(`dsh:${sessionId}`, { startedAt: startedAt || lastUsedAt, lastUsedAt: lastUsedAt || startedAt });
+    }
+  }
+
   for (const ref of refs.values()) {
     const key = `${ref.client}:${ref.sessionId}`;
     if (resolvedSessionKeys.has(key)) continue;
     if (metadata.has(key)) continue;
     const timestamp = timestampFromSessionId(ref.sessionId);
     if (timestamp) metadata.set(key, { startedAt: timestamp, lastUsedAt: timestamp });
-    if (!['claude', 'codex', 'opencode'].includes(ref.client)) resolvedSessionKeys.add(key);
+    if (!['claude', 'codex', 'opencode', 'dsh'].includes(ref.client)) resolvedSessionKeys.add(key);
   }
   for (const ref of refs.values()) attemptedSessionKeys.add(`${ref.client}:${ref.sessionId}`);
 
@@ -1050,6 +1243,10 @@ async function collectUsageOnce(options) {
     metadataCache: new Map(),
     resolvedSessionKeys: new Set(),
     attemptedSessionKeys: new Set()
+    // dshSessionFileCache is deliberately NOT reset here: it's module-level
+    // (declared with jsonlTimestampCache above) precisely so it survives
+    // across collectUsageOnce calls — every field in this object, unlike
+    // that one, is intentionally rebuilt fresh on every call.
   };
   const decorateLocalPeriods = (periods, { retryMisses = false } = {}) => applySessionTimestamps(
     periods,
@@ -1058,14 +1255,17 @@ async function collectUsageOnce(options) {
   );
   // Proma and Qoder CN remain local compatibility adapters. Reasonix aggregate
   // usage is supplied by the same Tokscale path as every other tracked client.
-  const localClients = new Set(['proma', 'qodercn']);
+  const localClients = new Set(PARSE_LOCAL_CLIENTS);
   const tokscaleClients = normalizedClients ? normalizedClients.split(',').filter((c) => !localClients.has(c)).join(',') : normalizedClients;
   const includesProma = normalizedClients.split(',').includes('proma');
   const includesQoderCn = normalizedClients.split(',').includes('qodercn');
   const trackedClientSet = new Set(normalizedClients.split(',').filter(Boolean));
   const targetClients = [...new Set(normalizeClientsCsv(options.targetClients).split(',').filter((client) => trackedClientSet.has(client)))];
   const targetRequested = targetClients.length > 0;
-  const targetTokscaleClients = targetClients.filter((client) => !localClients.has(client)).join(',');
+  const targetClientSet = new Set(targetClients);
+  const targetTokscaleClientList = targetClients.filter((client) => !localClients.has(client));
+  const targetTokscaleClientSet = new Set(targetTokscaleClientList);
+  const targetTokscaleClients = targetTokscaleClientList.join(',');
   const qoderCnReadState = options.qoderCnReadState;
   if (qoderCnReadState) {
     qoderCnReadState.periodFailed = false;
@@ -1162,9 +1362,26 @@ async function collectUsageOnce(options) {
         const bundle = extractUsageBundleFromTokscale(todayJson);
         freshPartitions = bundle.byClient;
         const unattributed = freshPartitions[UNATTRIBUTED_USAGE_CLIENT];
-        if (targetRequested && periodHasUsage(unattributed)) {
-          // A row without a client cannot be replaced safely inside one client
-          // partition. Fall back to one all-client today scan for correctness.
+        const attributedClients = Object.keys(freshPartitions).filter((client) => client !== UNATTRIBUTED_USAGE_CLIENT);
+        const hasMissingTargetPartition = (
+          targetTokscaleClientList.length > 1
+          && targetTokscaleClientList.some((client) => !Object.prototype.hasOwnProperty.call(freshPartitions, client))
+        );
+        const hasUnsafeTargetedResult = (
+          periodHasUsage(unattributed)
+          || attributedClients.some((client) => !targetTokscaleClientSet.has(client))
+          || hasMissingTargetPartition
+        );
+
+        // A unioned watch scan can hide cross-attribution inside its own target
+        // set, and a missing partition cannot distinguish deletion from an
+        // incomplete or polluted union. Rebuild one authoritative full snapshot
+        // rather than trying to repair a partial result client by client.
+        if (targetRequested && hasUnsafeTargetedResult) {
+          // Every attributed row from a targeted scan must normalize back into
+          // the requested set. An unattributed row or an unexpected client would
+          // otherwise clear the target while partially overwriting an unrelated
+          // anchor partition. Rebuild the complete today snapshot instead.
           const fullTodayJson = await runTokscaleFn({ clients: tokscaleClients, flags: ['--today'], commandTimeoutMs });
           freshPartitions = extractUsageBundleFromTokscale(fullTodayJson).byClient;
           useTargetedPartitions = false;
@@ -1180,6 +1397,20 @@ async function collectUsageOnce(options) {
         // A transient local.db read failure must not turn the existing Qoder CN
         // partition into an empty one or subtract it from month/allTime.
         freshPartitions.qodercn = anchor.todayPartitions.qodercn;
+      }
+      if (!useTargetedPartitions) {
+        // The fallback rebuilds every Tokscale partition, but parse-local
+        // adapters do not participate in that scan. Preserve any adapter that
+        // this tick did not refresh instead of treating its absence as empty.
+        for (const client of localClients) {
+          if (
+            !targetClientSet.has(client)
+            && !Object.prototype.hasOwnProperty.call(freshPartitions, client)
+            && anchor.todayPartitions?.[client]
+          ) {
+            freshPartitions[client] = anchor.todayPartitions[client];
+          }
+        }
       }
       todayPartitions = useTargetedPartitions
         ? replaceTodayPartitions(anchor.todayPartitions, freshPartitions, targetClients)
@@ -1480,9 +1711,27 @@ function fileExists(file) {
   try { return fs.statSync(file).isFile(); } catch (_) { return false; }
 }
 
-function nonBlankEnvPath(name, fallback) {
-  const value = process.env[name];
+function nonBlankEnvPath(name, fallback, env = process.env) {
+  const value = env[name];
   return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
+function absoluteEnvPath(name, fallback, env = process.env) {
+  const value = env[name];
+  return typeof value === 'string' && path.isAbsolute(value) ? value : fallback;
+}
+
+function cherryStudioTranscriptRoots({ homeDir, platform = process.platform, env = process.env } = {}) {
+  const home = homeDir || os.homedir();
+  const appDataRoot = platform === 'win32'
+    ? nonBlankEnvPath('APPDATA', path.join(home, 'AppData', 'Roaming'), env)
+    : platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : absoluteEnvPath('XDG_CONFIG_HOME', path.join(home, '.config'), env);
+  return [
+    ['cherrystudio-transcripts', path.join(appDataRoot, 'CherryStudio', 'Data', 'Agents', '.claude', 'projects')],
+    ['cherrystudio-transcripts', path.join(appDataRoot, 'CherryStudio', '.claude', 'projects')]
+  ];
 }
 
 function xdgDataHome(home) {
@@ -1570,8 +1819,8 @@ function hasCopilotChatSessions(workspaceRoot) {
 // paths contain the user's home directory and never leave this process, so a
 // health record carries the id instead — CLIENT_SOURCE_CHECK_IDS in
 // clientHealth.js is the allowlist every id here must appear in.
-function clientSourceRoots(clientsCsv) {
-  const home = os.homedir();
+function clientSourceRoots(clientsCsv, options = {}) {
+  const home = options.homeDir || os.homedir();
   const enabled = new Set(String(clientsCsv || '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
   const byClient = {};
   const add = (client, ...roots) => {
@@ -1584,7 +1833,8 @@ function clientSourceRoots(clientsCsv) {
       }));
     }
   };
-  add('claude', ['claude-projects', path.join(home, '.claude', 'projects')], ['claude-transcripts', path.join(home, '.claude', 'transcripts')]);
+  const claudeRoots = claudeSessionRoots({ homeDir: home });
+  add('claude', ['claude-projects', claudeRoots.projects], ['claude-transcripts', claudeRoots.transcripts]);
   const codexHome = nonBlankEnvPath('CODEX_HOME', path.join(home, '.codex'));
   add(
     'codex',
@@ -1734,6 +1984,12 @@ function clientSourceRoots(clientsCsv) {
     REASONIX_SOURCE_CHECK_ID,
     resolveReasonixStatsDir({ env: process.env, homeDir: home, platform: process.platform, cwdDir: process.cwd() })
   ]);
+  // DeepSeek Harness (DSH) — zstd JSONL session transcripts at
+  // `<dshHome>/sessions/` (default `~/.dsh`, overridable via `DSH_HOME`).
+  add('dsh', [
+    DSH_SOURCE_CHECK_ID,
+    resolveDshSessionsDir({ env: process.env, homeDir: home, platform: process.platform })
+  ]);
   // Kiro (AWS): tokscale reads home-relative roots — the sessions tree used by
   // both CLI and IDE, the Kiro IDE globalStorage root (native macOS / Linux /
   // Windows), and the kiro-cli sqlite dir. None falls back to a host-absolute
@@ -1788,15 +2044,15 @@ function clientSourceRoots(clientsCsv) {
   // `<appdata>/CherryStudio/Data/Agents/.claude/projects`; the legacy root
   // keeps the pre-V2 snapshot. Both are watched; tokscale dedupes same-named
   // sessions (V2 copy wins, legacy fills in sessions V2 lacks).
-  //
-  // Root resolution lives in cherryStudioSessions.js (shared with the session
-  // catalog adapter) so the catalog can never drift from what tokscale scans.
-  const cherryAppDataRoots = cherryStudioRoots({ home });
+  const cherryRoots = cherryStudioTranscriptRoots({
+    homeDir: home,
+    platform: options.platform || process.platform,
+    env: options.env || process.env
+  });
   add(
     'cherrystudio',
-    ...[...new Set(cherryAppDataRoots)].map((dir) => ['cherrystudio-transcripts', dir])
+    ...cherryRoots
   );
-  add('dsh', ['dsh-sessions', path.join(home, '.dsh', 'sessions')]);
   return byClient;
 }
 
@@ -3508,6 +3764,7 @@ module.exports = {
   visibleDiagnosticRoots,
   clientSourceChecks,
   clientSourceRoots,
+  cherryStudioTranscriptRoots,
   clientsForWatchPath,
   clientWatchCandidates,
   computePeriodWindows,
@@ -3537,6 +3794,7 @@ module.exports = {
   resetPromaPricingCache,
   readTokscalePricingCatalog,
   resetTokscaleCatalogCache,
+  resetTokscaleCapabilityCache,
   restoreDshRouteProviders,
   tokscalePricingCatalog,
   resolveWatchUsePolling,

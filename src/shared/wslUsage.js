@@ -38,6 +38,7 @@ const WSL_DATA_MARKERS = [
   '.config/Code/User/globalStorage/kilocode.kilo-code/tasks',
   '.vscode-server/data/User/globalStorage/kilocode.kilo-code/tasks',
   '.commandcode/projects',
+  '.dsh/sessions',
   '.local/share/mimocode/mimocode.db',
   '.zcode/projects',
   '.zcode/cli/db',
@@ -81,6 +82,7 @@ const MARKER_CLIENTS = {
   '.config/Code/User/globalStorage/kilocode.kilo-code/tasks': 'kilocode',
   '.vscode-server/data/User/globalStorage/kilocode.kilo-code/tasks': 'kilocode',
   '.commandcode/projects': 'commandcode',
+  '.dsh/sessions': 'dsh',
   '.local/share/mimocode/mimocode.db': 'micode',
   '.zcode/projects': 'zcode',
   '.zcode/cli/db': 'zcode',
@@ -90,8 +92,7 @@ const MARKER_CLIENTS = {
   '.config/kiro/User/globalStorage/kiro.kiroagent': 'kiro',
   '.codebuddy/projects': 'codebuddy',
   '.workbuddy': 'workbuddy',
-  '.proma/agent-sessions': 'proma',
-  '.dsh/sessions': 'dsh'
+  '.proma/agent-sessions': 'proma'
 };
 
 // Default command runner. reg output is ANSI/utf8; wsl.exe output is UTF-16LE.

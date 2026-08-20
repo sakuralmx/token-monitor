@@ -26,6 +26,10 @@ const fontSettingsApi = require('../shared/fontSettings');
 const motionPreferenceApi = require('./motionPreference');
 const { createClientSourceIpcHandlers } = require('./clientSourceIpc');
 const { createClaudeWebFetch } = require('./claudeWebFetch');
+const {
+  createWorkbuddyLocalAuth,
+  isSupportedWorkbuddyLocalAppPlatform
+} = require('./workbuddyLocalAuth');
 const { createElectronLimitsFetch } = require('./limitsFetch');
 const {
   expandedBoundsForCollapse,
@@ -45,6 +49,9 @@ const {
 // event and Electron pops a "JavaScript error in the main process" dialog.
 installSafeStdout();
 const electronClaudeWebFetch = createClaudeWebFetch(net);
+const electronWorkbuddyLocalAuth = createWorkbuddyLocalAuth({
+  fetch: electronLimitsFetch()
+});
 // One transport for every widget provider call that resolves through
 // `deps.fetch` — see limitsFetch.js for why the branch and the request options
 // are what they are. Probes that build their own transport inherit neither
@@ -251,6 +258,7 @@ const {
   pickUsageTrayIconId,
   parseWindowsSystemUsesLightTheme,
   popoverBounds,
+  prepareTrayIconForPlatform,
   reconcileCodexAccountSelection,
   runTrayMenuAction,
   watchSystemDarkUi,
@@ -323,6 +331,22 @@ if (!app.isPackaged) loadDotEnv();
 
 const APP_NAME = 'Token Monitor';
 const APP_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+const WINDOWS_APP_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon-win.png');
+
+// Electron's own documentation says a window given no icon falls back to the
+// executable's, and recommends ICO on Windows; electron-builder already
+// converts `win.icon` into the ICO embedded in that executable, which is the
+// icon built for this platform rather than one PNG scaled at runtime. So a
+// packaged window deliberately sets
+// nothing here: whatever it set could only override that, which is exactly what
+// naming the macOS artwork was doing to the taskbar button and Alt-Tab entry
+// (it carries the Dock's inset margin — see WINDOWS_ICON_PATH in tray.js). An
+// unpackaged run has no icon of ours inside electron.exe to inherit, so it names
+// the same full-bleed artwork the installer is built from.
+function appWindowIcon() {
+  if (process.platform !== 'win32') return { icon: APP_ICON_PATH };
+  return app.isPackaged ? {} : { icon: WINDOWS_APP_ICON_PATH };
+}
 
 const DEFAULT_WINDOW = { width: 340, height: 650 };
 const WINDOW_LIMITS = { minWidth: 240, minHeight: 140, maxWidth: 1200, maxHeight: 1400 };
@@ -646,8 +670,16 @@ function electronUsageConfig(errorPrefix) {
 }
 
 function electronLimitsConfig() {
+  const workbuddyEnabled = settings?.limitsEnabled !== false
+    && parseLimitProviders(settings?.limitProviders).includes('workbuddy');
+  const workbuddyDesktopSessionSupported = isSupportedWorkbuddyLocalAppPlatform();
+  const workbuddyDesktopSessionEnabled = workbuddyEnabled && workbuddyDesktopSessionSupported;
   return limitsConfigFromSettings(settings, {
     env: process.env,
+    workbuddyDesktopSessionOnly: true,
+    workbuddyDesktopSessionSupported,
+    workbuddyDesktopSessionEnabled,
+    workbuddyLocalSession: workbuddyDesktopSessionEnabled ? electronWorkbuddyLocalAuth.getSessionInfo() : {},
     defaultLimitProviders: defaultLimitProviders(),
     codexManagedAccounts: codexManagedAccountsForCollector(),
     mimoManagedAccounts: mimoManagedAccountsForCollector()
@@ -699,6 +731,14 @@ function electronLimitsDeps() {
   return {
     fetch: electronLimitsFetch(),
     claudeWebFetch: electronClaudeWebFetch,
+    workbuddyFetch: async (url, init = {}, expectedSession = null) => {
+      const result = await electronWorkbuddyLocalAuth.request(url, init, expectedSession);
+      return {
+        status: result.status,
+        ok: result.ok,
+        json: () => result.json()
+      };
+    },
     resolveConfigSnapshot: () => electronLimitsConfig(),
     onClaudeWebCookieRenewed: persistClaudeWebCookieRenewal
   };
@@ -2127,6 +2167,7 @@ function readSettings() {
     merged.showHomeLimitBars = parseBoolean(merged.showHomeLimitBars, false);
     merged.showHomeLimitProviderNames = parseBoolean(merged.showHomeLimitProviderNames, false);
     merged.opencodeLocalLimitsEnabled = parseBoolean(merged.opencodeLocalLimitsEnabled, false);
+    delete merged.workbuddyLocalAppEnabled;
     merged.windowMaximized = parseBoolean(merged.windowMaximized, false);
     merged.automaticAppUpdates = parseBoolean(merged.automaticAppUpdates, false);
     if (saved.homeLimitProviderOrder !== undefined) {
@@ -2182,6 +2223,7 @@ function readSettings() {
     merged.currencyRates = normalizeCurrencyOverrides(merged.currencyRates);
     merged.hubHostPort = normalizeHubPort(merged.hubHostPort);
     merged.hubHostSecret = typeof merged.hubHostSecret === 'string' ? merged.hubHostSecret : '';
+    delete merged.workbuddyEndpoint;
     merged.floatingBubbleEnabled = parseBoolean(merged.floatingBubbleEnabled ?? merged.edgeDrawerEnabled, false);
     merged.archivedClientUsage = normalizeArchivedClientUsage(merged.archivedClientUsage);
     delete merged.edgeDrawerEnabled;
@@ -4321,8 +4363,17 @@ function settingsForRenderer() {
   const redactedCredentials = credentialSettingsForRenderer(settings, {
     expose: ['hubHostSecret', 'secret']
   });
+  const rendererSettings = { ...settings };
+  for (const key of [
+    'workbuddyAccessToken',
+    'workbuddyUserId',
+    'workbuddyEnterpriseId',
+    'workbuddyLocale',
+    'workbuddyDomain',
+    'workbuddyDepartmentInfo'
+  ]) delete rendererSettings[key];
   return {
-    ...settings,
+    ...rendererSettings,
     locale: trayMenuLocale(),
     ...redactedCredentials,
     // On a hub the shared list is the truth; settings.subscriptions is only the
@@ -5775,7 +5826,7 @@ function createWindow(boundsOverride, options = {}) {
     resizable: !collapsedFloatingBubble,
     show: false,
     backgroundColor: '#00000000',
-    icon: APP_ICON_PATH,
+    ...appWindowIcon(),
     skipTaskbar: collapsedFloatingBubble || Boolean(settings?.trayMode),
     ...(collapsedFloatingBubble ? { fullscreenable: false, maximizable: false, minimizable: false } : {}),
     // Keeps a popover unmaximizable across rebuilds, which never re-run enterTrayMode().
@@ -5930,7 +5981,7 @@ function createDashboardWindow() {
     transparent: !(process.platform === 'win32' && glass),
     show: false,
     backgroundColor: '#00000000',
-    icon: APP_ICON_PATH,
+    ...appWindowIcon(),
     skipTaskbar: false,
     ...(process.platform === 'darwin' && glass ? { vibrancy: 'hud', visualEffectState: 'active' } : {}),
     ...(process.platform === 'win32' && glass ? { backgroundMaterial: 'acrylic' } : {}),
@@ -6150,6 +6201,14 @@ app.whenReady().then(() => {
     delete normalizedPatch.windowMaximized;
     delete normalizedPatch.codexManagedAccounts;
     delete normalizedPatch.mimoManagedAccounts;
+    delete normalizedPatch.workbuddyAccessToken;
+    delete normalizedPatch.workbuddyUserId;
+    delete normalizedPatch.workbuddyEnterpriseId;
+    delete normalizedPatch.workbuddyEndpoint;
+    delete normalizedPatch.workbuddyLocale;
+    delete normalizedPatch.workbuddyDomain;
+    delete normalizedPatch.workbuddyDepartmentInfo;
+    delete normalizedPatch.workbuddyLocalAppEnabled;
     delete normalizedPatch.openrouterProfiles;
     delete normalizedPatch.thirdPartyProfiles;
     delete normalizedPatch.customModelPricing;
@@ -6510,8 +6569,16 @@ app.whenReady().then(() => {
       const img = nativeImage.createFromDataURL(dataUrl);
       if (img.isEmpty()) continue;
       // Resize by height only; aspect ratio is preserved, so wide bar-style
-      // icons keep their width while square provider icons stay 20x20.
-      const sized = img.resize({ height: 20, quality: 'best' });
+      // icons keep their width while square provider icons stay square.
+      // Windows targets its own small-icon metric (16px x the display scale
+      // factor) rather than the macOS menubar height, so a single high-quality
+      // downscale of the 44px-tall renderer source stays crisp in the
+      // notification area instead of the old fixed 20px-for-all blur, and its
+      // square cell gets the bitmap trimmed to the pixels the renderer drew.
+      const sized = prepareTrayIconForPlatform(img, {
+        platform: process.platform,
+        scaleFactor: screen.getPrimaryDisplay().scaleFactor
+      });
       if (shouldUseTemplateTrayIcon(id, process.platform, settings?.showTrayProviderBadge)) sized.setTemplateImage(true);
       providerTrayIcons[id] = sized;
     }
@@ -7616,6 +7683,7 @@ app.on('before-quit', () => {
   if (rateRefreshTimer) clearInterval(rateRefreshTimer);
   if (appUpdateBackgroundTimer) clearInterval(appUpdateBackgroundTimer);
   unregisterWindowToggleShortcut();
+  electronWorkbuddyLocalAuth.dispose();
   if (skipForcedQuit) return;
   performQuit();
 });

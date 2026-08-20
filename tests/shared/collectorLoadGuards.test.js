@@ -2359,6 +2359,7 @@ test('live watch events scan only changed clients and preserve the other client 
   const calls = [];
   let codexDeleted = false;
   let codexUnattributed = false;
+  let codexUnexpectedClient = false;
   childProcess.spawn = (_bin, args) => {
     calls.push(args);
     const selected = String(args[args.indexOf('--client') + 1] || '').split(',').filter(Boolean);
@@ -2370,6 +2371,8 @@ test('live watch events scan only changed clients and preserve the other client 
     setImmediate(() => {
       const entries = codexUnattributed && selected.length === 1 && selected[0] === 'codex'
         ? [{ model: 'unknown', totalTokens: 99 }]
+        : codexUnexpectedClient && selected.length === 1 && selected[0] === 'codex'
+          ? [{ client: 'claude', model: 'unexpected-model', totalTokens: 99 }]
         : selected.filter((client) => !(codexDeleted && client === 'codex')).map((client) => {
             const tokens = client === 'codex' && selected.length === 1 ? 30 : (client === 'codex' ? 20 : 10);
             return {
@@ -2451,19 +2454,32 @@ test('live watch events scan only changed clients and preserve the other client 
     assert.equal(calls[7][calls[7].indexOf('--client') + 1], 'claude,codex');
     assert.equal(updates[4].summary.today.totalTokens, 30);
 
+    // An attributed row outside the requested client set is just as unsafe as
+    // an unattributed row: applying it would clear codex and replace claude with
+    // a partial targeted result. Rebuild today from an all-client scan instead.
+    codexUnattributed = false;
+    codexUnexpectedClient = true;
+    watchHandler('change', path.join(tmp, '.codex', 'sessions', 'unexpected.jsonl'));
+    await waitForCondition(() => updates.length === 6);
+    assert.equal(calls[8][calls[8].indexOf('--client') + 1], 'codex');
+    assert.equal(calls[9][calls[9].indexOf('--client') + 1], 'claude,codex');
+    assert.equal(updates[5].summary.today.totalTokens, 30);
+    assert.equal(updates[5].summary.today.clients.claude, 10);
+    assert.equal(updates[5].summary.today.clients.codex, 20);
+
     // A targeted scan that returns no rows replaces that client's partition
     // with empty usage, so deletes do not leave stale totals behind.
-    codexUnattributed = false;
+    codexUnexpectedClient = false;
     codexDeleted = true;
     watchHandler('unlink', path.join(tmp, '.codex', 'sessions', 'active.jsonl'));
-    await waitForCondition(() => updates.length === 6);
-    const deletion = calls[8];
+    await waitForCondition(() => updates.length === 7);
+    const deletion = calls[10];
     assert.equal(deletion[deletion.indexOf('--client') + 1], 'codex');
-    assert.equal(updates[5].summary.today.totalTokens, 10);
-    assert.equal(updates[5].summary.today.clients.claude, 10);
-    assert.equal(updates[5].summary.today.clients.codex, undefined);
-    assert.equal(updates[5].summary.month.totalTokens, 10);
-    assert.equal(updates[5].summary.allTime.totalTokens, 10);
+    assert.equal(updates[6].summary.today.totalTokens, 10);
+    assert.equal(updates[6].summary.today.clients.claude, 10);
+    assert.equal(updates[6].summary.today.clients.codex, undefined);
+    assert.equal(updates[6].summary.month.totalTokens, 10);
+    assert.equal(updates[6].summary.allTime.totalTokens, 10);
   } finally {
     if (handle) handle.stop();
     childProcess.spawn = originalSpawn;
@@ -2818,7 +2834,7 @@ test('collector publishes live periods when only Qoder CN history read fails', a
   }
 });
 
-test('smart collection coalesces watch events into one targeted interval scan', async () => {
+test('smart collection coalesces watch events into one targeted interval tick', async () => {
   const tmp = withTmpHome([
     path.join('.claude', 'projects'),
     path.join('.codex', 'sessions')
@@ -2869,10 +2885,11 @@ test('smart collection coalesces watch events into one targeted interval scan', 
     assert.equal(calls.length, 3, 'watch events never scan immediately in smart mode');
 
     await waitForCondition(() => updates.length === 2);
-    assert.equal(calls.length, 4, 'one today-only scan acknowledges the event batch');
+    assert.equal(calls.length, 5, 'one targeted tick acknowledges the event batch');
     assert.equal(calls[3][calls[3].indexOf('--client') + 1], 'claude,cursor');
+    assert.equal(calls[4][calls[4].indexOf('--client') + 1], 'claude,codex,cursor');
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(calls.length, 4, 'the acknowledged batch does not repeat');
+    assert.equal(calls.length, 5, 'the acknowledged batch does not repeat');
   } finally {
     if (handle) handle.stop();
     childProcess.spawn = originalSpawn;

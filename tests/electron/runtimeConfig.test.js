@@ -133,6 +133,80 @@ test('limits config resolves managed credentials at dispatch time through contex
   assert.deepEqual(limits.mimoManagedAccounts, [{ id: 'mimo', cookieHeader: 'allowlisted' }]);
 });
 
+test('desktop WorkBuddy Local App monitoring stays inactive outside the selected provider lane', () => {
+  const limits = limitsConfigFromSettings({}, { env: {}, workbuddyDesktopSessionOnly: true });
+  assert.equal(limits.workbuddyDesktopSessionSupported, true);
+  assert.equal(limits.workbuddyDesktopSessionEnabled, false);
+  assert.equal(limits.workbuddyAccessToken, '');
+  assert.equal(Object.hasOwn(limits, 'workbuddyEndpoint'), false);
+});
+
+test('desktop WorkBuddy Local App monitoring preserves an unsupported platform capability', () => {
+  const limits = limitsConfigFromSettings({}, {
+    env: {},
+    workbuddyDesktopSessionOnly: true,
+    workbuddyDesktopSessionSupported: false,
+    workbuddyDesktopSessionEnabled: false
+  });
+  assert.equal(limits.workbuddyDesktopSessionSupported, false);
+  assert.equal(limits.workbuddyDesktopSessionEnabled, false);
+  assert.equal(limits.workbuddyAccessToken, '');
+});
+
+test('desktop WorkBuddy Local App monitoring resolves session metadata when its provider lane is enabled', () => {
+  const limits = limitsConfigFromSettings({}, {
+    env: {},
+    workbuddyDesktopSessionOnly: true,
+    workbuddyDesktopSessionEnabled: true,
+    workbuddyLocalSession: {
+      userId: 'local-user',
+      enterpriseId: 'local-enterprise',
+      accountType: 'enterprise'
+    }
+  });
+  assert.equal(limits.workbuddyDesktopSessionEnabled, true);
+  assert.equal(limits.workbuddyUserId, 'local-user');
+  assert.equal(limits.workbuddyEnterpriseId, 'local-enterprise');
+  assert.equal(limits.workbuddyAccountType, 'enterprise');
+  assert.equal(limits.workbuddyAccessToken, '');
+});
+
+test('desktop WorkBuddy auth reads can be disabled without enabling fallback credentials', () => {
+  const limits = limitsConfigFromSettings({
+    workbuddyAccessToken: 'legacy-settings-token',
+    workbuddyUserId: 'legacy-user'
+  }, {
+    env: {
+      TOKEN_MONITOR_WORKBUDDY_ACCESS_TOKEN: 'env-token',
+      TOKEN_MONITOR_WORKBUDDY_USER_ID: 'env-user'
+    },
+    workbuddyDesktopSessionOnly: true,
+    workbuddyDesktopSessionEnabled: false,
+    workbuddyLocalSession: { userId: 'local-user', accountType: 'personal' }
+  });
+  assert.equal(limits.workbuddyDesktopSessionEnabled, false);
+  assert.equal(limits.workbuddyAccessToken, '');
+  assert.equal(limits.workbuddyUserId, '');
+  assert.equal(limits.workbuddyAccountType, '');
+});
+
+test('desktop WorkBuddy config ignores legacy settings and environment credentials', () => {
+  const limits = limitsConfigFromSettings({
+    workbuddyAccessToken: 'legacy-settings-token',
+    workbuddyUserId: 'legacy-user',
+  }, {
+    env: {
+      TOKEN_MONITOR_WORKBUDDY_ACCESS_TOKEN: 'env-token',
+      TOKEN_MONITOR_WORKBUDDY_USER_ID: 'env-user'
+    },
+    workbuddyDesktopSessionOnly: true,
+    workbuddyDesktopSessionEnabled: false
+  });
+  assert.equal(limits.workbuddyAccessToken, '');
+  assert.equal(limits.workbuddyUserId, '');
+  assert.equal(limits.workbuddyDesktopSessionEnabled, false);
+});
+
 test('settings classifier separates structural, limits reconfigure, sink, and provider invalidation changes', () => {
   const previous = {
     hubMode: 'local',
@@ -174,6 +248,15 @@ test('OpenRouter profile changes invalidate only the OpenRouter limits lane', ()
     { openrouterProfiles: { work: { apiKey: 'new', enabled: true } } }
   );
   assert.deepEqual(classification.limitScopes, [{ provider: 'openrouter' }]);
+});
+
+test('WorkBuddy provider selection reconfigures the limits runtime', () => {
+  const classification = classifySettingsChange(
+    { limitProviders: 'claude' },
+    { limitProviders: 'claude,workbuddy' }
+  );
+  assert.equal(classification.limitsReconfigure, true);
+  assert.deepEqual(classification.limitScopes, []);
 });
 
 test('Claude Web cookie falls back to env and invalidates only the Claude limits lane', () => {

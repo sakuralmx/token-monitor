@@ -1,6 +1,6 @@
 'use strict';
 
-const clientLabels = { claude: 'Claude Code', codex: 'Codex', hermes: 'Hermes Agent', gemini: 'Gemini', cursor: 'Cursor', opencode: 'OpenCode', openclaw: 'OpenClaw', antigravity: 'Antigravity', cline: 'Cline', kimi: 'Kimi', qwen: 'Qwen', grok: 'Grok Build', copilot: 'GitHub Copilot', pi: 'Pi', zed: 'Zed', kilocode: 'Kilo Code', commandcode: 'Command Code', micode: 'MiMo Code', zcode: 'ZCode', kiro: 'Kiro', codebuddy: 'CodeBuddy', workbuddy: 'WorkBuddy', proma: 'Proma', qodercn: 'Qoder CN', reasonix: 'Reasonix', cherrystudio: 'Cherry Studio', dsh: 'DeepSeek Harness' };
+const clientLabels = { claude: 'Claude Code', codex: 'Codex', hermes: 'Hermes Agent', gemini: 'Gemini', cursor: 'Cursor', opencode: 'OpenCode', openclaw: 'OpenClaw', antigravity: 'Antigravity', cline: 'Cline', kimi: 'Kimi', qwen: 'Qwen', grok: 'Grok Build', copilot: 'GitHub Copilot', pi: 'Pi', zed: 'Zed', kilocode: 'Kilo Code', commandcode: 'Command Code', micode: 'MiMo Code', zcode: 'ZCode', kiro: 'Kiro', codebuddy: 'CodeBuddy', workbuddy: 'WorkBuddy', proma: 'Proma', qodercn: 'Qoder CN', reasonix: 'Reasonix', dsh: 'DeepSeek Harness', cherrystudio: 'Cherry Studio' };
 const reasonixSessionGuard = window.TokenMonitorReasonixSessionGuard;
 const { clientColors, fallbackModelColors, modelVendorFor, modelColor } = window.TokenMonitorUsageCharts;
 const motionPreferenceApi = window.TokenMonitorMotionPreference;
@@ -13,7 +13,7 @@ const tokenRateApi = window.TokenMonitorTokenRate;
 const { tokenRatePerSecond, tokenBurnPerMinute } = tokenRateApi;
 const reducedMotionMedia = window.matchMedia?.('(prefers-reduced-motion: reduce)');
 const clientsWithIcon = new Set([
-  'claude', 'codex', 'gemini', 'cursor', 'opencode', 'openclaw', 'hermes', 'antigravity', 'cline', 'kimi', 'qwen', 'grok', 'copilot', 'pi', 'zed', 'kilocode', 'commandcode', 'micode', 'zcode', 'kiro', 'codebuddy', 'workbuddy', 'proma', 'qodercn', 'reasonix', 'cherrystudio', 'dsh',
+  'claude', 'codex', 'gemini', 'cursor', 'opencode', 'openclaw', 'hermes', 'antigravity', 'cline', 'kimi', 'qwen', 'grok', 'copilot', 'pi', 'zed', 'kilocode', 'commandcode', 'micode', 'zcode', 'kiro', 'codebuddy', 'workbuddy', 'proma', 'qodercn', 'reasonix', 'dsh', 'cherrystudio',
   'xai', 'openrouter', 'deepseek', 'meta', 'mistral', 'qwen', 'moonshot', 'zai', 'zaiteam', 'cohere', 'xiaomi', 'mimo', 'minimax', 'doubao', 'volcengine', 'qoder', 'ollama', 'thirdparty', 'hunyuan'
 ]);
 
@@ -73,8 +73,8 @@ const KNOWN_CLIENTS = [
   { id: 'proma', label: 'Proma' },
   { id: 'qodercn', label: 'Qoder CN' },
   { id: 'reasonix', label: 'Reasonix' },
-  { id: 'cherrystudio', label: 'Cherry Studio' },
-  { id: 'dsh', label: 'DeepSeek Harness' }
+  { id: 'dsh', label: 'DeepSeek Harness' },
+  { id: 'cherrystudio', label: 'Cherry Studio' }
 ];
 const LIMIT_PROVIDERS = [
   { id: 'claude', label: 'Claude', settingsLabel: 'Claude Code' },
@@ -90,6 +90,7 @@ const LIMIT_PROVIDERS = [
   { id: 'zai', label: 'GLM' },
   { id: 'zaiteam', label: 'GLM Team' },
   { id: 'kiro', label: 'Kiro' },
+  { id: 'workbuddy', label: 'WorkBuddy' },
   { id: 'qoder', label: 'Qoder' },
   { id: 'deepseek', label: 'DeepSeek' },
   { id: 'openrouter', label: 'OpenRouter' },
@@ -139,7 +140,8 @@ const LIMIT_PROVIDER_ACCOUNT_STATUS_IDS = {
 const LIMIT_PROVIDER_CONNECTION_DETAIL_KEYS = {
   antigravity: 'settings.limits.connection.antigravity',
   grok: 'settings.limits.connection.grok',
-  kiro: 'settings.limits.connection.kiro'
+  kiro: 'settings.limits.connection.kiro',
+  workbuddy: 'settings.limits.connection.workbuddy'
 };
 const TRAY_ICON_VARIANTS = [
   { id: 'claude-brand', label: 'Claude', after: 'claude' },
@@ -3794,6 +3796,14 @@ function formatLimitAmount(value) {
   return `$${number.toFixed(2)}`;
 }
 
+function formatBalanceAmount(value, source) {
+  return formatMoney(value, source?.currency);
+}
+
+function formatBalanceSpendAmount(value, balance) {
+  return formatBalanceAmount(value, balance);
+}
+
 // Absolute count for windows that expose units (credits). It follows the same
 // display mode as percent bars: remaining/total in quota mode, used/total in
 // used mode.
@@ -4035,14 +4045,13 @@ function limitDetailInfoNode(entries, extraClass = '', ariaLabel = '') {
 function providerSpendNode(balance) {
   const entries = providerSpendEntries(balance);
   if (entries.length === 0) return null;
-  const currency = balance?.currency || 'USD';
   const preferredSummary = entries.filter(([label]) => label === 'Today' || label === 'Month');
   const summaryEntries = preferredSummary.length > 0 ? preferredSummary : entries.slice(0, 2);
-  const formatted = entries.map(([entryLabel, value]) => [entryLabel, formatMoney(value, currency)]);
+  const formatted = entries.map(([entryLabel, value]) => [entryLabel, formatBalanceSpendAmount(value, balance)]);
   return limitNoteRowNode({
     label: 'Spend',
     summary: summaryEntries
-      .map(([label, value]) => `${label} ${formatMoney(value, currency)}`)
+      .map(([label, value]) => `${label} ${formatBalanceSpendAmount(value, balance)}`)
       .join(' · '),
     // Only worth a tooltip when it would say more than the summary already does.
     detailEntries: entries.length > summaryEntries.length ? formatted : null,
@@ -4168,9 +4177,7 @@ function formatLimitWindowValue(window, fillPercent, hasPercent, showUsed) {
 
 function formatHomeLimitWindowValue(window, showUsed) {
   if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');
-  // A credits window's headline value is money. Its percentage denominator is
-  // lifetime spend, which reads as a quota but isn't one.
-  if (window?.metric === 'credits') {
+  if (isCreditsWindow(window)) {
     if (window.remaining == null) {
       return String(window.detail || '').toLowerCase() === 'unlimited'
         ? t('settings.thirdparty.unlimited')
@@ -4180,6 +4187,16 @@ function formatHomeLimitWindowValue(window, showUsed) {
   }
   const percent = limitFillPercent(window?.remainingPercent, window?.usedPercent, showUsed);
   return `${formatPercent(percent)} ${limitModeSuffix(showUsed)}`;
+}
+
+function workbuddyCreditsValue(provider, credits) {
+  const amount = creditsAmount(provider, credits);
+  if (amount !== null) {
+    return formatCompactMoney(amount, credits?.currency || provider?.balance?.currency);
+  }
+  return String(credits?.detail || '').toLowerCase() === 'unlimited'
+    ? t('settings.thirdparty.unlimited')
+    : '';
 }
 
 function mimoTokenPlanWindowFromBalance(balance) {
@@ -4893,6 +4910,30 @@ function renderProviderWindows(provider, color) {
       );
       node.classList.add('limit-window-wide');
       windows.append(node);
+    }
+  } else if (provider.provider === 'workbuddy') {
+    const credits = windowForKind(provider, 'billing');
+    const balance = provider.balance || null;
+    const value = workbuddyCreditsValue(provider, credits);
+    if (credits && value) {
+      const displayWindow = {
+        ...credits,
+        label: credits.label || 'Credits'
+      };
+      const node = limitWindowNode(
+        displayWindow.label,
+        displayWindow,
+        color,
+        0.95,
+        value
+      );
+      node.classList.add('limit-window-wide');
+      if (!displayWindow.resetsAt && !displayWindow.resetDescription) {
+        node.classList.add('limit-window-no-reset');
+      }
+      windows.append(node);
+      const spendNode = providerSpendNode(balance);
+      if (spendNode) windows.append(spendNode);
     }
   } else if (provider.provider === 'commandcode') {
     // 5-hour and weekly are rate-limit windows (percent); the monthly grant and
@@ -8192,7 +8233,6 @@ function syncHubModeUi() {
   els.hubClientFields.classList.toggle('hidden', mode !== 'client');
   els.hubHostFields.classList.toggle('hidden', mode !== 'host');
   if (mode === 'host') {
-    els.hubPortInput.value = String(state.settings.hubHostPort || 17321);
     els.hubSecretInput.value = state.settings.hubHostSecret || '';
     renderHubStatus();
   }
@@ -8427,6 +8467,55 @@ function renderSessionUsageArchiveStatus() {
     : t('settings.collection.sessionArchiveEmpty');
 }
 
+const HUB_DRAFT_FIELDS = [
+  ['hubUrl', 'hubUrlInput'],
+  ['secret', 'secretInput'],
+  ['deviceId', 'deviceIdInput'],
+  ['hubHostPort', 'hubPortInput']
+];
+const hubDraftDirty = Object.fromEntries(HUB_DRAFT_FIELDS.map(([field]) => [field, false]));
+const hubDraftRevisions = Object.fromEntries(HUB_DRAFT_FIELDS.map(([field]) => [field, 0]));
+
+function markHubDraftDirty(field) {
+  const inputId = HUB_DRAFT_FIELDS.find(([name]) => name === field)?.[1];
+  const input = inputId ? els[inputId] : null;
+  if (!input) return;
+  hubDraftRevisions[field] += 1;
+  hubDraftDirty[field] = true;
+}
+
+function syncHubDraftFields() {
+  for (const [field, inputId] of HUB_DRAFT_FIELDS) {
+    const input = els[inputId];
+    if (!input || hubDraftDirty[field]) continue;
+    input.value = field === 'hubHostPort'
+      ? String(state.settings?.hubHostPort || 17321)
+      : state.settings?.[field] || '';
+  }
+}
+
+function normalizeHubDraftValue(field, value) {
+  if (field === 'hubHostPort') return String(Number(value) || 17321);
+  if (field === 'secret') return String(value ?? '');
+  return String(value ?? '').trim();
+}
+
+function reconcileHubDraftsAfterSave(submitted, submittedRevisions) {
+  for (const [field, inputId] of HUB_DRAFT_FIELDS) {
+    const input = els[inputId];
+    if (!input) continue;
+    if (!Object.prototype.hasOwnProperty.call(submitted, field)) continue;
+    const current = normalizeHubDraftValue(field, input.value);
+    if (
+      hubDraftRevisions[field] === submittedRevisions[field]
+      && current === submitted[field]
+    ) {
+      hubDraftDirty[field] = false;
+    }
+  }
+  syncHubDraftFields();
+}
+
 function syncSettingsForm() {
   applySettingsTranslations();
   applyInitialBreakdownPreference();
@@ -8438,9 +8527,7 @@ function syncSettingsForm() {
   }
   if (els.currencyInput) els.currencyInput.value = currentCurrency();
   syncCurrencyRateControls();
-  els.hubUrlInput.value = state.settings.hubUrl || '';
-  els.secretInput.value = state.settings.secret || '';
-  els.deviceIdInput.value = state.settings.deviceId || '';
+  syncHubDraftFields();
   if (els.catalogEnabledInput) els.catalogEnabledInput.checked = state.settings.catalogEnabled === true;
   els.limitsRefreshInput.value = state.settings.limitsRefreshMode === 'adaptive'
     ? 'adaptive'
@@ -11032,7 +11119,7 @@ els.breakdown.addEventListener('click', (event) => {
   if (!rowEl) return;
   const key = rowEl.dataset.key || '';            // "session:<client>:<sessionId>"
   const client = rowEl.dataset.client || '';
-  if (client !== 'claude' && client !== 'codex' && client !== 'opencode' && client !== 'reasonix') return;
+  if (client !== 'claude' && client !== 'codex' && client !== 'opencode' && client !== 'reasonix' && client !== 'dsh') return;
   if (client === 'reasonix' && rowEl.dataset.detailUnavailable === 'true') return;
   const match = key.match(/^session:([^:]+):(.+)$/);
   if (!match) return;
@@ -11063,16 +11150,25 @@ els.settingsButton.addEventListener('click', (event) => {
   requestAnimationFrame(() => { els.shell.style.transform = ''; });
 });
 els.saveSettingsButton.addEventListener('click', async () => {
-  const patch = {
+  const submittedHubFields = {
     hubUrl: els.hubUrlInput.value.trim(),
     secret: els.secretInput.value,
-    deviceId: els.deviceIdInput.value.trim(),
-    catalogEnabled: els.catalogEnabledInput ? els.catalogEnabledInput.checked : state.settings.catalogEnabled
+    deviceId: els.deviceIdInput.value.trim()
+  };
+  const patch = {
+    ...submittedHubFields,
+    ...(els.catalogEnabledInput ? { catalogEnabled: els.catalogEnabledInput.checked } : {})
   };
   if (state.settings.hubMode === 'host') {
-    patch.hubHostPort = Number(els.hubPortInput.value) || 17321;
+    const hubHostPort = Number(els.hubPortInput.value) || 17321;
+    submittedHubFields.hubHostPort = String(hubHostPort);
+    patch.hubHostPort = hubHostPort;
   }
+  const submittedHubRevisions = Object.fromEntries(
+    Object.keys(submittedHubFields).map((field) => [field, hubDraftRevisions[field]])
+  );
   await saveSettings(patch);
+  reconcileHubDraftsAfterSave(submittedHubFields, submittedHubRevisions);
   await refreshHubInfo();
   void refreshHubBuildStatus();
   await refreshStats();
@@ -11163,6 +11259,7 @@ els.secretPasteButton?.addEventListener('click', async () => {
     const text = await navigator.clipboard.readText();
     if (text) {
       els.secretInput.value = text.trim();
+      markHubDraftDirty('secret');
     }
   } catch (_) {}
 });
@@ -11238,6 +11335,9 @@ for (const input of els.showLimitUsedInputs || []) {
   input.addEventListener('change', async () => {
     if (input.checked) await saveSettings({ showLimitUsed: input.value === 'used' });
   });
+}
+for (const [field, inputId] of HUB_DRAFT_FIELDS) {
+  els[inputId]?.addEventListener('input', () => markHubDraftDirty(field));
 }
 els.syncUploadIntervalInput?.addEventListener('change', async () => {
   await saveSettings({ syncUploadIntervalMs: Number(els.syncUploadIntervalInput.value) });
@@ -11795,13 +11895,13 @@ function providerImageOpticalSample(image) {
   return sample;
 }
 
-function paintProviderImage(ctx, image, x, y, size, templateColor = '') {
+function paintProviderImage(ctx, image, x, y, size, templateColor = '', optical = {}) {
   const {
     trayProviderOpticalLayout,
     trayProviderOpticalRatio
   } = window.TokenMonitorTrayProviderIcons;
   const sample = providerImageOpticalSample(image);
-  const opticalRatio = trayProviderOpticalRatio(trayProviderImageIds.get(image));
+  const opticalRatio = trayProviderOpticalRatio(trayProviderImageIds.get(image), optical);
   const layout = trayProviderOpticalLayout(sample.bounds, size, opticalRatio);
   const maskSize = Math.max(1, Math.round(size));
   const mask = document.createElement('canvas');
@@ -11842,16 +11942,16 @@ function trayGlyphInk(options, image) {
   );
 }
 
-function drawProviderImage(ctx, image, x, y, size, contrastHalo = false, templateColor = '') {
+function drawProviderImage(ctx, image, x, y, size, contrastHalo = false, templateColor = '', optical = {}) {
   if (contrastHalo) {
     const lightSurface = themePresetsApi.isLightHex(resolvedThemeColor('bg'));
     ctx.save();
     ctx.shadowColor = lightSurface ? 'rgba(0, 0, 0, 0.58)' : 'rgba(255, 255, 255, 0.82)';
     ctx.shadowBlur = Math.max(2, Math.round(size * 0.1));
-    paintProviderImage(ctx, image, x, y, size, templateColor);
+    paintProviderImage(ctx, image, x, y, size, templateColor, optical);
     ctx.restore();
   }
-  paintProviderImage(ctx, image, x, y, size, templateColor);
+  paintProviderImage(ctx, image, x, y, size, templateColor, optical);
 }
 
 function renderBarsIcon(stats, height = 44, picker = pickWorstProvider, colors = {}, options = {}) {
@@ -12797,11 +12897,15 @@ function providerImageToPngDataUrl(img, size, showBadge = false, options = {}) {
   const ctx = canvas.getContext('2d');
   const imageInset = showBadge ? Math.max(1, Math.round(layout.iconSize * 0.07)) : 0;
   const imageSize = layout.iconSize - imageInset * 2;
+  // Only the tray delivery marks itself standalone: there the mark is the whole
+  // icon and Windows expects it to fill its cell. The composer's provider picker
+  // renders previews through here too and keeps the composed optical inset.
+  const optical = { standalone: options.standalone === true, platform: state.appInfo?.platform };
   if (showBadge) {
     ctx.save();
     ctx.shadowColor = 'rgba(255, 255, 255, 0.95)';
     ctx.shadowBlur = Math.max(2, Math.round(layout.iconSize * 0.1));
-    paintProviderImage(ctx, img, imageInset, imageInset, imageSize);
+    paintProviderImage(ctx, img, imageInset, imageInset, imageSize, '', optical);
     ctx.restore();
   }
   drawProviderImage(
@@ -12811,7 +12915,8 @@ function providerImageToPngDataUrl(img, size, showBadge = false, options = {}) {
     imageInset,
     imageSize,
     false,
-    trayGlyphInk({ templateIconColor: options.templateColor, trayInk: options.trayInk }, img)
+    trayGlyphInk({ templateIconColor: options.templateColor, trayInk: options.trayInk }, img),
+    optical
   );
 
   if (!showBadge) return canvas.toDataURL('image/png');
@@ -12855,7 +12960,7 @@ async function deliverTrayProviderIcons(showBadge = state.settings?.showTrayProv
       const img = await loadImage(path);
       trayProviderImages[id] = img;
       trayProviderImageIds.set(img, id);
-      icons[id] = providerImageToPngDataUrl(img, 44, showBadge, { trayInk: true });
+      icons[id] = providerImageToPngDataUrl(img, 44, showBadge, { trayInk: true, standalone: true });
     } catch (_) { /* skip missing */ }
   }
   if (!trayProviderIconDeliveryGuard.isCurrent(deliveryId)) return;
