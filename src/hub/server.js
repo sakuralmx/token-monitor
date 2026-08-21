@@ -19,6 +19,7 @@ const { createCatalogStore } = require('../shared/catalogStore');
 const { mergeQuotaPercentageHistory, normalizeQuotaPercentageHistory } = require('../shared/quotaPercentageHistory');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const MAX_SSE_CLIENTS = 512;
 
 // Without a secret the hub cannot tell its own widget from any other caller, so it
 // must not expose account identity (email/plan/key) to the network. Binding to
@@ -101,7 +102,15 @@ function createHub({
   }
 
   const sseClients = new Set();
+  const sseHeartbeats = new Map();
   const statsListeners = new Set();
+
+  function dropSseClient(res) {
+    const heartbeat = sseHeartbeats.get(res);
+    if (heartbeat) clearInterval(heartbeat);
+    sseHeartbeats.delete(res);
+    sseClients.delete(res);
+  }
 
   function sseFormat(event, data) {
     return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -114,7 +123,7 @@ function createHub({
     if (sseClients.size > 0) {
       const payload = sseFormat('stats', { type: 'stats', reason, stats, at });
       for (const res of sseClients) {
-        try { res.write(payload); } catch (_) { sseClients.delete(res); }
+        try { res.write(payload); } catch (_) { dropSseClient(res); }
       }
     }
     for (const listener of statsListeners) {
@@ -259,6 +268,9 @@ function createHub({
     }
 
     if (req.method === 'GET' && url.pathname === '/api/stats/stream') {
+      if (sseClients.size >= MAX_SSE_CLIENTS) {
+        return sendJson(res, 503, { error: 'too_many_streams' });
+      }
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache, no-transform',
@@ -268,9 +280,12 @@ function createHub({
       res.write(sseFormat('snapshot', { type: 'stats', reason: 'snapshot', stats: getStats(), at: new Date().toISOString() }));
       sseClients.add(res);
       const heartbeat = setInterval(() => { try { res.write(': hb\n\n'); } catch (_) {} }, 30000);
-      const cleanup = () => { clearInterval(heartbeat); sseClients.delete(res); };
+      sseHeartbeats.set(res, heartbeat);
+      const cleanup = () => dropSseClient(res);
       req.on('close', cleanup);
       req.on('error', cleanup);
+      res.on('close', cleanup);
+      res.on('error', cleanup);
       return;
     }
 
@@ -393,6 +408,8 @@ function createHub({
   function stop() {
     return new Promise((resolve) => {
       for (const res of sseClients) { try { res.end(); } catch (_) {} }
+      for (const heartbeat of sseHeartbeats.values()) clearInterval(heartbeat);
+      sseHeartbeats.clear();
       sseClients.clear();
       if (catalog) { try { catalog.close(); } catch (_) {} }
       server.close(() => resolve());
